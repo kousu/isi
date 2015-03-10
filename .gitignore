@@ -1,3 +1,13 @@
+# hide password!
+isi_rip.logined.sh
+
+# backups
+*~
+
+
+
+# Github Python Defaults:
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
