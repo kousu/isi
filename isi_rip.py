@@ -150,7 +150,7 @@ class ISISession(requests.Session):
     def request(self, *args, **kwargs):
         return super().request(*args, **kwargs)
     
-    def generalSearch(self, *fields, startYear=1900, endYear=2015, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
+    def generalSearch(self, *fields, period=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
         Perform a search of the http://apps.webofknowledge.com/WOS_GeneralSearch_input.do form.
         
@@ -198,7 +198,20 @@ class ISISession(requests.Session):
             The length of fields should be an odd number because there should be exactly one less operator than query pairs.
             It also, apparently, should not contain more than 49 fields.
             This is an awkward format; you're just going to have to DEAL WITH IT. It's better than trying to parse a string before feeding it.
-        startYear, endYear: the range of years to search.
+        period: the timespan to search.
+            Can be:
+             - "ALL"
+             - "Latest5Years"
+             - "YearToDate"
+             - "4week"
+             - "2week"
+             - "1week"
+             - an integer year
+             - or a pair (startYear, endYear)
+            The first set correspond to the first radio button on the search page next to a dropdown;
+            The last two correspond to second next to the two year range selection dropdowns (a single integer period=y is the same as period=(y,y)).
+            (yes, this appears to be partially redundant with the "PY" field. Try not to cringe too much.)
+            
         editions: the list of WoS subsections to search:
             #TODO: document what these are
             The default is all known, so you can probably leave it alone mostly.
@@ -249,7 +262,7 @@ class ISISession(requests.Session):
                     'x': '0', 'y': '0',
                     # whyyyyyy
                     'ss_query_language': 'auto', 'ss_showsuggestions': 'ON', 'ss_numDefaultGeneralSearchFields': '1',
-                    'ss_lemmatization': 'On', 'period': 'Range Selection', 'limitStatus': 'collapsed', 'update_back2search_link_param': 'yes',
+                    'ss_lemmatization': 'On', 'limitStatus': 'collapsed', 'update_back2search_link_param': 'yes',
                     #'sa_params': "UA||4ATCGy9dQvV3rtykDa3|http://apps.webofknowledge.com.proxy.lib.uwaterloo.ca|'", #<-- TODO: this seems to repeat things passed elsewhere: product, SID, and URL. The first two I can get, but the URL is tricky because I've abstracted out from coding against the UW proxy directly
                         # but I suspect the system won't notice if it's missing...
                     'ss_spellchecking': 'Suggest', 'ssStatus': 'display:none',
@@ -292,10 +305,37 @@ class ISISession(requests.Session):
             warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
         form_query += list(({
                     'fieldCount': str(fieldCount),
-                    'startYear': str(startYear), 'endYear': str(endYear), 
                     'rs_sort_by': sort,
-                    'range': 'ALL', #????,
                     }).items())
+             
+        def period2isi(period):
+            """    
+             the period is actually several sub-fields together; as in fields2isi we re-interpret the python arguments into ISI's crufty form
+            """
+            #default values
+            range = "ALL"
+            startYear, endYear = 1900, 2000
+            
+            try:
+                # (startYear, endYear)
+                startYear, endYear = period
+                period = "Year Range"
+            except:
+                if isinstance(period, int):
+                    startYear, endYear = period, period
+                    period = "Year Range"
+                else:
+                    range = period
+                    period = "Range Selection" #<-- LOL, reversed the orders why dontcha
+            
+            yield ("period", period)
+            yield ("startYear", str(startYear))
+            yield ("endYear", str(endYear))
+            # this term is unused, in this case, but it's still POSTed
+            yield ("range", range)
+        
+        form_query += period2isi(period)
+        #
         form_query += [("editions", e) for e in editions] #this reuses the parameter name to pass an array (in contrast to the array of search terms which are passed by a list of differently named params). SWEET.
         
         # merge all the sections
