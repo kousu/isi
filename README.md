@@ -2,13 +2,13 @@ ISI Tools
 ===========
 
 These are a bunch of tools for dealing with the ISI Web of Science.
-You can use them to extract, clean, and process records citation data a heavy Unix bias
+You can use them to extract, clean, and process article records in the [ISI Flat File format](TODO)..
 
 Some examples of the sorts of work that can be done with this data:
-* Kieran Healy: [Gender and Citation in Four General](http://kieranhealy.org/blog/archives/2015/02/25/gender-and-citation-in-four-general-interest-philosophy-journals-1993-2013/)
+* Kieran Healy: [Gender and Citation](http://kieranhealy.org/blog/archives/2015/02/25/gender-and-citation-in-four-general-interest-philosophy-journals-1993-2013/)
 * Neal Caren: [A Sociology Citation Network](http://nealcaren.web.unc.edu/a-sociology-citation-network/)
 
-The tools are very alpha at this stage.
+The tools are very alpha at this stage and have a heavy Unix bias.
 Please submit bug reports and feature requests.
 I would love to be useful to the wider world.
 
@@ -49,6 +49,9 @@ Exporting records [2501,3001) to 2AiZ7oSbJ2Y7a2MctLA_2501.isi
 
 ISI Join
 -------
+
+Combine separate .isi files into a single file.
+This is needed for processing with [sci^2](https://sci2.cns.iu.edu/user/index.php).
 
 ### Example
 
