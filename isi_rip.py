@@ -6,7 +6,7 @@ import sys, os
 
 
 import locale
-from itertools import count
+from itertools import count, chain, cycle
 
 from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl
 import traceback
@@ -17,9 +17,14 @@ from bs4 import BeautifulSoup
 from warnings import warn
 
 
-
 #------------ utils
 
+
+def flatten(L):
+    """
+    flatten a nested list by one level
+    """
+    return list(chain.from_iterable(L))
 
 def list_ret(g):
     """
@@ -579,25 +584,56 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description="Export paper associated metadata from the Web of Science. Currently only works for University of Waterloo members.")
     ap.add_argument('user', type=str, help="Your last name, as you use to log in to the UW library proxy")
     ap.add_argument('barcode', type=str, help="Your 14 digit library card barcode number (not your student ID!)")
-    # TODO: support more than just 'topic'
-    # TODO: support year filtering, item type filtering, the sort order (which matters since we're not going to get everything)
-    ap.add_argument('topic', type=str, help="The topic to query for (TODO: extend this)")
+    ap.add_argument('query', type=str, nargs="+", help="A query in the form FD=filter where FD is the field and filter is what to search for in that field.")
+    ap.epilog = """
+    Fields are given by two letter codes as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_wos_fieldtags.html.
+    Filters support globbing as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_rules.html.
+    
+    If multiple queries are given they will be ANDed together.
+    
+    ISI supports more search parameters than exposed here.
+    If you need more control you can use this program as a library:
+    ```
+    import isi_scrape
+    help(isi_scrape.UWISISession)
+    ```
+    
+    All records in the resultset will be automatically exported, 500 at a time, to the current directory.
+    Currently, the exported filenames will be the session ID ISI's web framework assigned, in lieu of something more meaningful. 
+    """ #^TODO: argparse helpfully reflows the text but this fucks up the formatting that I do want. What do?
     
     args = ap.parse_args()
     #print(args) #DEBUG
     
+    def parse_queries(Q):
+        for e in Q:
+            
+            try:
+                field, query = e.split("=")
+                yield field, query
+            except:
+                ap.error("Incorrectly formatted query '%s'" % (e,))
+    args.query = list(parse_queries(args.query))
+    
     tos_warning()
     
+    
     try:
+        
+        query = flatten(zip(args.query,  cycle(["AND"]))) #this line is line "AND".join(query)
+        query = query[:-1] #chomp the straggling incorrect, "AND"
+        
         S = AnonymizedUWISISession()
-        S.login(args.user, args.barcode) #TODO take from command line
+        S.login(args.user, args.barcode)
         print("Logged into ISI as UW:%s." % (args.user,))
-        print("Querying ISI for 'TS=%s'" % (args.topic,))
-        Q = S.search(args.topic)
-        #Q = S.generalSearch(("AD","Tunisia"), "AND", ("TS", "Allergy"))
+        
+        print("Querying ISI for %s" % (query,)) #TODO: pretty-print
+        Q = S.generalSearch(*query)
         print("Got %s%d results" % ("an estimated " if Q.estimated else "", len(Q)))
-        print("Ripping resultset", Q)
-        Q.rip("%s.isi" % (args.topic)) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
+        
+        fname = "%s.isi" % (S._SID)
+        print("Ripping results to", fname)
+        Q.rip(fname) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
     except Exception as exc:
         print("------ EXCEPTION ------")
         traceback.print_exc()
