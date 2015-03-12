@@ -190,6 +190,12 @@ class ISISession(requests.Session):
                     PMID= PubMed ID 
                 You can reuse fields, though it's easy to end up with empty resultsets if you do this.
                 Reference: http://apps.webofknowledge.com/WOS_AdvancedSearch_input.do
+                           http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_wos_fieldtags.html
+                    WARNING: these two pages give inconsistent lists of fields:
+                      the first uses "PMID" and the second "PM"
+                      the first uses "IS" and the second "BN" to refer to ISBN, much like Harry and Draco.
+                      the first doesn't list "DT" and some other fields
+                      You apparently can search by anything in the fuller list, regardless.
               - querystring is fed directly into ISI unchecked. You generally can use globbing here (*, $ ?, ...)
                 You can also (apparently) embed operator strings here.
                 Reference: http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_rules.html
@@ -462,7 +468,9 @@ class ISIQuery:
          - bibtex                       -- for LaTeX junkies
          - html                         -- if you hate yourself
         
-        Returns the HTTP response from ISI's OutboundService.do, because I don't want to corner your choices.
+        Returns the HTTP response from ISI's OutboundService.do,
+        because I don't want to corner your choices, though this
+        does mean you get more information than you expect, probably.
         """
         assert start >= 0 and end >= 0
         assert start < end
@@ -530,6 +538,9 @@ class ISIQuery:
         fname: file name. used as a template: if fname == "fname.ext" then records will be exported to ["fname_0001.ext", "fname_0501.ext", ...] 
         upper_limit: the largest record index to export; use this to make an easy guarantee that you won't get stomped by ISI for chewing through their data.
         # TODO:
+          make Queries record their parameters and write a __str__ which canonicallizes them into a text form, then implicitly use this as fname. Done right, this will really help provenance.
+           -> or at the very least
+           -> tricky because there are soooooooooooooooo many parameters; 
           add random jitter between requests so we don't look so botty
         """
         base_name, ext = os.path.splitext(fname)
