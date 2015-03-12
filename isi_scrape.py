@@ -373,6 +373,7 @@ class ISISession(requests.Session):
         #print("performed a query; dropping to shell; query result is in r and soup")
         #import IPython; IPython.embed()
         
+        # TODO: search for error message in output, translate it to an exception        
         
         qid = soup.find("input", {"name": "qid"})['value']
         #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
@@ -607,7 +608,12 @@ if __name__ == '__main__':
     Currently, the exported filenames will be the session ID ISI's web framework assigned, in lieu of something more meaningful. 
     """ #^TODO: argparse helpfully reflows the text but this fucks up the formatting that I do want. What do?
     
+    
     args = ap.parse_args()
+    
+    #by sorting we enforce that each search has a unique reference for each search
+    args.query = sorted(args.query)
+    
     if args.debug: #<-- a bit dangerous, since if -d breaks we won't know it 
         print(args) #DEBUG
     
@@ -624,7 +630,6 @@ if __name__ == '__main__':
     if not args.quiet:
         tos_warning()
     
-    
     try:
         
         query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
@@ -640,7 +645,7 @@ if __name__ == '__main__':
         print("Got %s%d results" % ("an estimated " if Q.estimated else "", len(Q)))
         
         # make a new folder for the results, labelled by the query used to generate them
-        strquery = str.join(" ", args.query)
+        strquery = str.join(" ", (args.query))
         results_folder = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
         if not os.path.isdir(results_folder):
             print("Making results folder", results_folder)
