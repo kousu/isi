@@ -150,7 +150,7 @@ class ISISession(requests.Session):
     def request(self, *args, **kwargs):
         return super().request(*args, **kwargs)
     
-    def generalSearch(self, *fields, period=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
+    def generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
         Perform a search of the http://apps.webofknowledge.com/WOS_GeneralSearch_input.do form.
         
@@ -198,7 +198,7 @@ class ISISession(requests.Session):
             The length of fields should be an odd number because there should be exactly one less operator than query pairs.
             It also, apparently, should not contain more than 49 fields.
             This is an awkward format; you're just going to have to DEAL WITH IT. It's better than trying to parse a string before feeding it.
-        period: the timespan to search.
+        timespan: optional timespan to restrict results to.
             Can be:
              - "ALL"
              - "Latest5Years"
@@ -210,6 +210,7 @@ class ISISession(requests.Session):
              - or a pair (startYear, endYear)
             The first set correspond to the first radio button on the search page next to a dropdown;
             The last two correspond to second next to the two year range selection dropdowns (a single integer period=y is the same as period=(y,y)).
+            If timespan==None, assumes "ALL"
             (yes, this appears to be partially redundant with the "PY" field. Try not to cringe too much.)
             
         editions: the list of WoS subsections to search:
@@ -251,6 +252,7 @@ class ISISession(requests.Session):
         form_target = list(form_target.items())
         
         # this is crap ISI probably ignores
+        # TODO: try commenting this out and seeing if anything breaks. (requires a working test suite, which is annoying because the only server to test against is the real one)
         form_cruft = {
                     'max_field_count': str(max_field_count), #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
                     # (the browser is sending hardcoded error messages as options in its *query*??)
@@ -308,33 +310,37 @@ class ISISession(requests.Session):
                     'rs_sort_by': sort,
                     }).items())
              
-        def period2isi(period):
+        def period2isi():
             """    
              the period is actually several sub-fields together; as in fields2isi we re-interpret the python arguments into ISI's crufty form
             """
-            #default values
-            range = "ALL"
-            startYear, endYear = 1900, 2000
+            #default values, as on the HTML form
+            period = "Range Selection" # this decides whether we're using the range drop down or the year dropdowns
+            range = "ALL"  #this is the value of the range dropdown
+            startYear, endYear = 1900, 2000 #this is the value of the year dropdowns
+            # obviously, only one of the latter two actually matters, but we POST both because we want to be as close to a browser as possible to avoid mishaps.
             
-            try:
-                # (startYear, endYear)
-                startYear, endYear = period
-                period = "Year Range"
-            except:
-                if isinstance(period, int):
-                    startYear, endYear = period, period
+            if timespan is not None:
+                try:
+                    # (startYear, endYear)
+                    startYear, endYear = timespan
                     period = "Year Range"
-                else:
-                    range = period
-                    period = "Range Selection" #<-- LOL, reversed the orders why dontcha
-            
+                except:
+                    if isinstance(timespan, int):
+                        # (year,)
+                        startYear, endYear = timespan, timespan
+                        period = "Year Range"
+                    else:
+                        # special-case ISI timespan
+                        assert timespan in ["ALL","Latest5Years","YearToDate","4week","2week","1week"], "ISI only knows these timespans, besides year ranges."
+                        range = timespan
+                
             yield ("period", period)
-            yield ("startYear", str(startYear))
-            yield ("endYear", str(endYear))
-            # this term is unused, in this case, but it's still POSTed
+            yield ("startYear", startYear)
+            yield ("endYear", endYear)
             yield ("range", range)
         
-        form_query += period2isi(period)
+        form_query += period2isi()
         #
         form_query += [("editions", e) for e in editions] #this reuses the parameter name to pass an array (in contrast to the array of search terms which are passed by a list of differently named params). SWEET.
         
