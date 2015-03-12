@@ -581,7 +581,7 @@ def tos_warning():
     print("")
 
 if __name__ == '__main__':
-    import argparse
+    import argparse, datetime
     
     # TODO: pass barcode via stdin to hide it from ps auxww
     # TODO: support non-UW logins
@@ -618,14 +618,14 @@ if __name__ == '__main__':
                 yield field, query
             except:
                 ap.error("Incorrectly formatted query '%s'" % (e,))
-    args.query = list(parse_queries(args.query))
+    query = list(parse_queries(args.query))
     
     tos_warning()
     
     
     try:
         
-        query = flatten(zip(args.query,  cycle(["AND"]))) #this line is line "AND".join(query)
+        query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
         query = query[:-1] #chomp the straggling incorrect, "AND"
         
         S = AnonymizedUWISISession()
@@ -636,8 +636,25 @@ if __name__ == '__main__':
         Q = S.generalSearch(*query)
         print("Got %s%d results" % ("an estimated " if Q.estimated else "", len(Q)))
         
-        fname = "%s.isi" % (S._SID)
-        print("Ripping results to", fname)
+        # make a new folder for the results, labelled by the query used to generate them
+        strquery = str.join(" ", args.query)
+        results_folder = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
+        if not os.path.isdir(results_folder):
+            print("Making results folder", results_folder)
+            os.mkdir(results_folder)
+        os.chdir(results_folder)
+        # record the parameters used for replicability
+        # this could be dne better
+        with open("parameters.txt","w") as desc:
+            print("ISI scrape\n"
+                  "==========\n"
+                  "\n"
+                  "Query: %s\n"
+                  "ISI Session: %s\n",
+                  "Date: %s\n" %
+                  (strquery, S._SID, datetime.datetime.now()), file=desc)
+        fname = "%s.isi" % (S._SID) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
+        print("Ripping results.")
         Q.rip(fname) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
     except Exception as exc:
         print("------ EXCEPTION ------")
