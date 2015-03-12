@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# TODO:
+# [ ] Use logging.debug() instead of print() everywhere
 
 import sys, os
 #import argparse, optparse, ...
@@ -590,6 +592,7 @@ if __name__ == '__main__':
     ap.add_argument('user', type=str, help="Your last name, as you use to log in to the UW library proxy")
     ap.add_argument('barcode', type=str, help="Your 14 digit library card barcode number (not your student ID!)")
     ap.add_argument('query', type=str, nargs="+", help="A query in the form FD=filter where FD is the field and filter is what to search for in that field.")
+    ap.add_argument('-d', '--debug', action="store_true", help="Enable debugging")
     ap.epilog = """
     Fields are given by two letter codes as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_wos_fieldtags.html.
     Filters support globbing as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_rules.html.
@@ -608,7 +611,8 @@ if __name__ == '__main__':
     """ #^TODO: argparse helpfully reflows the text but this fucks up the formatting that I do want. What do?
     
     args = ap.parse_args()
-    #print(args) #DEBUG
+    if args.debug: #<-- a bit dangerous, since if -d breaks we won't know it 
+        print(args) #DEBUG
     
     def parse_queries(Q):
         for e in Q:
@@ -630,6 +634,7 @@ if __name__ == '__main__':
         
         S = AnonymizedUWISISession()
         S.login(args.user, args.barcode)
+        
         print("Logged into ISI as UW:%s." % (args.user,))
         
         print("Querying ISI for %s" % (query,)) #TODO: pretty-print
@@ -650,19 +655,23 @@ if __name__ == '__main__':
                   "==========\n"
                   "\n"
                   "Query: %s\n"
-                  "ISI Session: %s\n",
+                  "ISI Session: %s\n"
                   "Date: %s\n" %
                   (strquery, S._SID, datetime.datetime.now()), file=desc)
-        fname = "%s.isi" % (S._SID) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
+        fname = "%s.isi" % (S._SID,) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
         print("Ripping results.")
         Q.rip(fname) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
     except Exception as exc:
-        print("------ EXCEPTION ------")
-        traceback.print_exc()
-        print()
-        print("placing exception into 'exc' and dropping to a shell")
-        print()
-        import IPython; IPython.embed()
+        if args.debug:
+            print("------ EXCEPTION ------")
+            traceback.print_exc()
+            print()
+            print("placing exception into 'exc' and dropping to a shell")
+            print()
+            import IPython; IPython.embed()
+        else:
+            raise
     else:
-        print("Finished ripping. You may continue to experiment with the session S and query Q.");
-        import IPython; IPython.embed()
+        if args.debug:
+            print("Finished ripping. You may continue to experiment with the session S and query Q.");
+            import IPython; IPython.embed()
