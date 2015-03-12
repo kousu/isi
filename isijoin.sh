@@ -1,6 +1,8 @@
 #!/bin/sh
 # usage: isijoin [savedrecs1.txt savedrecs2.txt ...] > joined.txt
-# outputs to stdout
+# notice that this just outputs to stdout
+# TODO: handle unicode correctly; the raw ISI files come in UTF-8 with a BOM; this script effectively strips that.
+#
 
 echo "FN Thomson Reuters Web of Science"
 echo "VR 1.0"
