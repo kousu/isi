@@ -21,26 +21,12 @@ from warnings import warn
 
 #------------ utils
 
-
 def flatten(L):
     """
     flatten a nested list by one level
     """
     return list(chain.from_iterable(L))
 
-def list_ret(g):
-    """
-    flatten a generator to a list, and additionally return its return value (which will be None if there isn't one and/or if g isn't actually a generator)
-    returns: (list(g), return_value)
-    
-    TODO: is this in stdlib somewhere?
-    """
-    L = []
-    while True:
-        try:
-            L.append(next(g))
-        except StopIteration as stop:
-            return L, stop.value
 
 def qs_parse(s):
     """
@@ -49,11 +35,9 @@ def qs_parse(s):
     both of these suck.
     """
     return dict(parse_qsl(s))
-    
-
-
 
 #--------------- ripper
+
 class UWProxy(requests.Session):
     """
     rewrite requests to go through the UW library
@@ -253,77 +237,77 @@ class ISISession(requests.Session):
         # most of them are ridiculously unusable and redundant and possibly ignored on the backend
         # but WHEN IN ROME...
         # 
-        # For readability, I split up the construction of the POST data into sections.
+        # For readability, I split up the construction of the POST data into a sections, with a generator for each.
+        # They are underscored to avoid conflicts with the input arguments.
         
-        # this is header stuff needed to convince the search engine to listen to us
-        form_target = {
-                    'product': 'WOS', # 'UA' == "all databases", "..." == korean thing, "..." = MedLine, ...; we want WOS because WOS can give us bibliographies, not just papers.
-                    'action': 'search', 
-                    'search_mode': 'GeneralSearch',
-                    'SID': self._SID, 
-        }
-        form_target = list(form_target.items())
+        def _target():
+            """ 
+            This is header stuff needed to convince the search engine to listen to us
+            """
+            yield 'product', 'WOS' # 'UA' == "all databases", "..." == korean thing, "..." = MedLine, ...; we want WOS because WOS can give us bibliographies, not just 
+            yield 'action', 'search' 
+            yield 'search_mode', 'GeneralSearch'
+            yield 'SID', self._SID
         
-        # this is crap ISI probably ignores
-        # TODO: try commenting this out and seeing if anything breaks. (requires a working test suite, which is annoying because the only server to test against is the real one)
-        form_cruft = {
-                    'max_field_count': str(max_field_count), #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
-                    # (the browser is sending hardcoded error messages as options in its *query*??)
-                    'input_invalid_notice': 'Search Error: Please enter a search term.',
-                    'exp_notice': 'Search Error: Patent search term could be found in more than one family (unique patent number required for Expand option) ',
-                    'max_field_notice': 'Notice: You cannot add another field.', 
-                    'input_invalid_notice_limits': ' <br/>Note: Fields displayed in scrolling boxes must be combined with at least one other search field.',
-                    # LOL what are these for?? "Yes, I Love Descartes Too"
-                    'x': '0', 'y': '0',
-                    # whyyyyyy
-                    'ss_query_language': 'auto', 'ss_showsuggestions': 'ON', 'ss_numDefaultGeneralSearchFields': '1',
-                    'ss_lemmatization': 'On', 'limitStatus': 'collapsed', 'update_back2search_link_param': 'yes',
-                    #'sa_params': "UA||4ATCGy9dQvV3rtykDa3|http://apps.webofknowledge.com.proxy.lib.uwaterloo.ca|'", #<-- TODO: this seems to repeat things passed elsewhere: product, SID, and URL. The first two I can get, but the URL is tricky because I've abstracted out from coding against the UW proxy directly
-                        # but I suspect the system won't notice if it's missing...
-                    'ss_spellchecking': 'Suggest', 'ssStatus': 'display:none',
-                    'formUpdated': 'true',
-                    }
-        form_cruft = list(form_cruft.items())
+        def _cruft():
+            """
+            this is crap ISI probably ignores
+            TODO: try commenting this out and seeing if anything breaks. (requires a working test suite, which is annoying because the only server to test against is the real one)
+            """
+            # (the browser is sending hardcoded error messages as options in its *query*??)
+            yield 'input_invalid_notice', 'Search Error: Please enter a search term.'
+            yield 'exp_notice', 'Search Error: Patent search term could be found in more than one family (unique patent number required for Expand option) '
+            yield 'max_field_notice', 'Notice: You cannot add another field.'
+            yield 'input_invalid_notice_limits', ' <br/>Note: Fields displayed in scrolling boxes must be combined with at least one other search field.'
+            # LOL what are these for?? "Yes, I Love Descartes Too"
+            yield 'x', '0',
+            yield 'y', '0',
+            # whyyyyyy
+            yield 'ss_query_language', 'auto'
+            yield 'ss_showsuggestions', 'ON'
+            yield 'ss_numDefaultGeneralSearchFields', '1'
+            yield 'ss_lemmatization', 'On'
+            yield 'limitStatus', 'collapsed'
+            yield 'update_back2search_link_param', 'yes'
+            #'sa_params': "UA||4ATCGy9dQvV3rtykDa3|http://apps.webofknowledge.com.proxy.lib.uwaterloo.ca|'", #<-- TODO: this seems to repeat things passed elsewhere: product, SID, and URL. The first two I can get, but the URL is tricky because I've abstracted out from coding against the UW proxy directly
+                # but I suspect the system won't notice if it's missing...
+            yield 'ss_spellchecking', 'Suggest'
+            yield 'ssStatus', 'display:none'
+            yield 'formUpdated', 'true'
         
         # This is the actual fields
         # This part is rather complicated. This ISI's fault.
-        def fields2isi():
+        def _fields():
             """
             this generator walks the input and reformats it into key-value pairs 
             returns the number of fields searched (which you need to retrieve from the StopIteration)
             Note: the number of times this yields is larger than the number of fields actually represented, because of ISI cruft, so you can't simply len() the result.
             """
-            
             for i in range(0, len(fields), 2):
                 t = (i//2)+1 #terms correspond to every other index, and are themselves indexed from 1
                 
                 # the field term
                 (field, querystring) = fields[i]
                 
-                yield ("value(select%d)" % t, field)
-                yield ("value(input%d)" % t, querystring) 
-                yield ("value(hidInput%d)" % t, "") #the fantastic spaztastic no-op hidden input field
+                yield "value(select%d)" % t, field
+                yield "value(input%d)" % t, querystring 
+                yield "value(hidInput%d)" % t, "" #the fantastic spaztastic no-op hidden input field
                 
                 # the operand term
                 if fields[i+1:]:
                     op = fields[i+1]
                     assert op in ["AND","OR","NOT","SAME","NEAR"], "ISI only knows these operators"
-                    yield ("value(bool_%d_%d)" % (t,t+1), op)
+                    yield "value(bool_%d_%d)" % (t,t+1), op
                 else:
                     # last field; don't include the operand term
                     assert len(fields)-1 == i, "Double checking I got the if right"
             
-            return t #the number of fields processed
+            if t > max_field_count:
+                warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
+            yield 'fieldCount', t  #the number of fields processed
+            yield 'max_field_count', max_field_count #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
         
-        form_query, fieldCount = list_ret(fields2isi())
-        if fieldCount > max_field_count:
-            warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
-        form_query += list(({
-                    'fieldCount': str(fieldCount),
-                    'rs_sort_by': sort,
-                    }).items())
-             
-        def period2isi():
+        def _period():
             """    
              the period is actually several sub-fields together; as in fields2isi we re-interpret the python arguments into ISI's crufty form
             """
@@ -353,13 +337,22 @@ class ISISession(requests.Session):
             yield ("endYear", endYear)
             yield ("range", range)
         
-        form_query += period2isi()
-        #
-        form_query += [("editions", e) for e in editions] #this reuses the parameter name to pass an array (in contrast to the array of search terms which are passed by a list of differently named params). SWEET.
+        def _sort_order():
+            yield 'rs_sort_by', sort
+        
+        def _editions():
+            for e in editions:
+                yield ("editions", e)
         
         # merge all the sections
         # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
-        form = form_target + form_cruft + form_query
+        # += on a list L and a generator G is the same as .extend(); note that L + G will *not* work.
+        form = []
+        form += _target()
+        form += _cruft()
+        form += _fields()
+        form += _sort_order()
+        form += _editions()
         
         #print(form) #DEBUG
         #import IPython; IPython.embed() #DEBUG
@@ -581,6 +574,9 @@ def tos_warning():
     print()
     print("The authors of this software take no responsibility for your use of it. Don't get b&.")
     print("")
+
+
+# ----------------------------- main
 
 if __name__ == '__main__':
     import argparse, datetime
