@@ -667,6 +667,8 @@ if __name__ == '__main__':
         os.chdir(results_folder)
         # record the parameters used for replicability
         # this could be dne better
+        if os.path.exists("parameters.txt"): #ughhhhhh, this is awkward. TODO: handle this case better.
+            warn("Overwriting old parameters.txt")
         with open("parameters.txt","w") as desc:
             print("ISI scrape\n"
                   "==========\n"
@@ -678,7 +680,7 @@ if __name__ == '__main__':
                   (strquery, len(Q), S._SID, datetime.datetime.now()), file=desc)
         fname = "%s.isi" % (S._SID,) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
         print("Ripping results.")
-        Q.rip(fname) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
+        Q.rip(fname)
     except Exception as exc:
         if args.debug:
             print("------ EXCEPTION ------")
