@@ -43,6 +43,15 @@ Exporting records [2501,3001) to 2AiZ7oSbJ2Y7a2MctLA_2501.isi
 [kousu@galleon isi]$ ls PY\=2006-2015_SU\=Sociology/
 2AiZ7oSbJ2Y7a2MctLA_0001.isi  2AiZ7oSbJ2Y7a2MctLA_1001.isi  2AiZ7oSbJ2Y7a2MctLA_2001.isi  parameters.txt
 2AiZ7oSbJ2Y7a2MctLA_0501.isi  2AiZ7oSbJ2Y7a2MctLA_1501.isi  2AiZ7oSbJ2Y7a2MctLA_2501.isi  [...]
+[kousu@galleon isi]$ cat PY\=2006-2015_SU\=Sociology/parameters.txt 
+ISI scrape
+==========
+
+Query: PY=2006-2015 SU=Sociology
+Records: 69220
+ISI Session: 2AiZ7oSbJ2Y7a2MctLA
+Date: 2015-03-12 13:20:38.785762
+
 [kousu@galleon isi]$ 
 ```
 
