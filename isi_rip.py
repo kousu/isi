@@ -302,10 +302,6 @@ class ISISession(requests.Session):
         # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
         form = form_target + form_cruft + form_query
         
-        print("SUBMITTING THIS SHIT")
-        print(form)
-        import IPython; IPython.embed() #DEBUG
-        
         # Do the query
         # this causes ISI to create and cache a resultset
         r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
