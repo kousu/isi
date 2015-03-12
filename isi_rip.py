@@ -359,6 +359,9 @@ class ISISession(requests.Session):
         # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
         form = form_target + form_cruft + form_query
         
+        #print(form) #DEBUG
+        #import IPython; IPython.embed() #DEBUG
+        
         # Do the query
         # this causes ISI to create and cache a resultset
         r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
@@ -368,11 +371,13 @@ class ISISession(requests.Session):
         soup = BeautifulSoup(r.content)
         
         # DEBUG
-        #with open("what.html","w") as what:
+        # being able to see what ISI gives back helps, especially since ISI seems to return 200 OK for *everything*
+        #with open("generalSearch()_result.html","w") as what:
         #    what.write(soup.prettify())
         
         #print("performed a query; dropping to shell; query result is in r and soup")
         #import IPython; IPython.embed()
+        
         
         qid = soup.find("input", {"name": "qid"})['value']
         #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
@@ -555,14 +560,14 @@ class ISIQuery:
             fname = "%s_%04d%s" % (base_name, block, ext)
             try:
                 r = self.export(block, block+500)
-                print("Exporting %s's records [%d,%d) to %s" % (self, block, block+500, fname), file=sys.stderr)
+                print("Exporting records [%d,%d) to %s" % (block, block+500, fname), file=sys.stderr) #TODO: if we start multiprocessing with this, we should print the query in here to distinguish who is doing what. Though I suppose printing the filename is equally good.
                 with open(fname,"w") as w:
                     w.write(r.text) #assuming ISI returns plain text to us. which it should. because we're telling it to.
             except HTTPError:
                 break
 
 def tos_warning():
-    print("In using this to download records from the Web of Science, you should aware of the terms of service:")
+    print("In using this to download records from the Web of Science, you should be aware of the terms of service:")
     print()
     print(
     "Thomson Reuters determines a “reasonable amount” of data to download by comparing your download activity\n"
