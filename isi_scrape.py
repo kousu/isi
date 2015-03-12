@@ -289,6 +289,12 @@ class ISISession(requests.Session):
                 # the field term
                 (field, querystring) = fields[i]
                 
+                if isinstance(querystring, list): #TODO: be more geneerric
+                    # attempt to coerce lists to the format used by GeneralSearch.do for OR'd enumerations
+                    # This is to ###-separarate the points
+                    # as far as I know, this is *only* used for but we'll leave that up to the user
+                    querystring = str.join("###", querystring)
+                
                 yield "value(select%d)" % t, field
                 yield "value(input%d)" % t, querystring 
                 yield "value(hidInput%d)" % t, "" #the fantastic spaztastic no-op hidden input field
