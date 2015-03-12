@@ -267,7 +267,7 @@ class ISISession(requests.Session):
             """
             
             for i in range(0, len(fields), 2):
-                t = i+1 #terms are indexed from 1
+                t = (i//2)+1 #terms correspond to every other index, and are themselves indexed from 1
                 
                 # the field term
                 (field, querystring) = fields[i]
@@ -280,7 +280,7 @@ class ISISession(requests.Session):
                 if fields[i+1:]:
                     op = fields[i+1]
                     assert op in ["AND","OR","NOT","SAME","NEAR"], "ISI only knows these operators"
-                    
+                    yield ("value(bool_%d_%d)" % (t,t+1), op)
                 else:
                     # last field; don't include the operand term
                     assert len(fields)-1 == i, "Double checking I got the if right"
@@ -537,6 +537,7 @@ if __name__ == '__main__':
         print("Logged into ISI as UW:%s." % (args.user,))
         print("Querying ISI for 'TS=%s'" % (args.topic,))
         Q = S.search(args.topic)
+        #Q = S.generalSearch(("AD","Tunisia"), "AND", ("TS", "Allergy"))
         print("Got %s%d results" % ("an estimated " if Q.estimated else "", len(Q)))
         print("Ripping resultset", Q)
         Q.rip("%s.isi" % (args.topic)) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
