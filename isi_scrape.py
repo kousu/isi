@@ -592,6 +592,7 @@ if __name__ == '__main__':
     ap.add_argument('user', type=str, help="Your last name, as you use to log in to the UW library proxy")
     ap.add_argument('barcode', type=str, help="Your 14 digit library card barcode number (not your student ID!)")
     ap.add_argument('query', type=str, nargs="+", help="A query in the form FD=filter where FD is the field and filter is what to search for in that field.")
+    ap.add_argument('-q', '--quiet', action="store_true", help="Silence most output")
     ap.add_argument('-d', '--debug', action="store_true", help="Enable debugging")
     ap.epilog = """
     Fields are given by two letter codes as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_wos_fieldtags.html.
@@ -624,7 +625,8 @@ if __name__ == '__main__':
                 ap.error("Incorrectly formatted query '%s'" % (e,))
     query = list(parse_queries(args.query))
     
-    tos_warning()
+    if not args.quiet:
+        tos_warning()
     
     
     try:
