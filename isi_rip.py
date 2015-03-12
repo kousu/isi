@@ -16,6 +16,25 @@ from bs4 import BeautifulSoup
 
 from warnings import warn
 
+
+
+#------------ utils
+
+
+def list_ret(g):
+    """
+    flatten a generator to a list, and additionally return its return value (which will be None if there isn't one and/or if g isn't actually a generator)
+    returns: (list(g), return_value)
+    
+    TODO: is this in stdlib somewhere?
+    """
+    L = []
+    while True:
+        try:
+            L.append(next(g))
+        except StopIteration as stop:
+            return L, stop.value
+
 def qs_parse(s):
     """
     the parse_qs in urllib returns lists of single elements for no obvious reason
@@ -26,6 +45,8 @@ def qs_parse(s):
     
 
 
+
+#--------------- ripper
 class UWProxy(requests.Session):
     """
     rewrite requests to go through the UW library
@@ -86,9 +107,19 @@ class UWProxy(requests.Session):
         Rewrite all requests going through this session to go through the library proxy.
         """
         assert self._logged_in == "logging_in" or self._logged_in, "Must be logged in to use the library proxy" #it will 302 to the login page if you're not; since this would be confusing when scripting, just disallow it.
-        scheme, host, path, params, query, fragment = urlparse(url)
-        proxy_host = host + ".proxy.lib.uwaterloo.ca"
-        proxy_url = urlunparse((scheme, proxy_host, path, params, query, fragment))
+        
+        def proxyify(url):
+            scheme, host, path, params, query, fragment = urlparse(url)
+            proxy_host = host + ".proxy.lib.uwaterloo.ca"
+            return urlunparse((scheme, proxy_host, path, params, query, fragment))
+        
+        proxy_url = proxyify(url)
+        
+        # rewrite the referer to use the proxy too
+        # TODO: where else do we leak URLs?
+        if 'headers' in kwargs:
+            if 'Referer' in kwargs['headers']:
+                kwargs['headers']['Referer'] = proxyify(kwargs['headers']['Referer'])
         
         #*disable* SSL checking because the libary proxy has an out of date cert or something. ugh.
         # TODO: figure out what's going on here; what if I explicitly add UW's cert to the search path (which python-requests lets me do by setting verify to a path instead of a boolean)
@@ -119,64 +150,96 @@ class ISISession(requests.Session):
     def request(self, *args, **kwargs):
         return super().request(*args, **kwargs)
     
-    def generalSearch(self, query):
+    def generalSearch(self, *fields, startYear=1900, endYear=2015, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
-        query is a dictionary mapping field codes to values.
-        As a special case, if query is a single string, it is assumed to be equivalent to {'TS': query}.
+        Perform a search of the http://apps.webofknowledge.com/WOS_GeneralSearch_input.do form.
         
-        Field Tags:
-            TS= Topic
-            TI= Title
-            AU= Author [Index]
-            AI= Author Identifiers
-            GP= Group Author [Index]
-            ED= Editor
-            SO= Publication Name [Index]
-            DO= DOI
-            PY= Year Published
-            CF= Conference
-            AD= Address
-            OG= Organization-Enhanced [Index]
-            OO= Organization
-            SG= Suborganization
-	
-            SA= Street Address
-            CI= City
-            PS= Province/State
-            CU= Country
-            ZP= Zip/Postal Code
-            FO= Funding Agency
-            FG= Grant Number
-            FT= Funding Text
-            SU= Research Area
-            WC= Web of Science Category
-            IS= ISSN/ISBN
-            UT= Accession Number
-            PMID= PubMed ID 
-        Source: http://apps.webofknowledge.com/WOS_AdvancedSearch_input.do
-        """
-        raise NotImplementedError
+        fields gives the fields to search; the keyword arguments give the other options.
         
-    def advancedSearch(self, query):
-        """
-        query should be a string in the form
-        #TODO: other options that advanced search allows, like "articles only"
-        """
-        raise NotImplementedError
-    
-    def query(self, query, startYear=1900, endYear=2015):
-        """
-        perform a query on the Web of Science; returns an ISIQuery object
+        fields:
+            specifies what to search for. This tuple should alternate between fields and operators.
+            Specifically, it alternates between:
+            - (field, querystring) pairs
+              - Field Tags:
+                    TS= Topic
+                    TI= Title
+                    AU= Author
+                    AI= Author Identifiers
+                    GP= Group Author
+                    ED= Editor
+                    SO= Publication Name
+                    DO= DOI
+                    PY= Year Published
+                    CF= Conference
+                    AD= Address
+                    OG= Organization-Enhanced
+                    OO= Organization
+                    SG= Suborganization
+                    SA= Street Address
+                    CI= City
+                    PS= Province/State
+                    CU= Country
+                    ZP= Zip/Postal Code
+                    FO= Funding Agency
+                    FG= Grant Number
+                    FT= Funding Text
+                    SU= Research Area
+                    WC= Web of Science Category
+                    IS= ISSN/ISBN
+                    UT= Accession Number
+                    PMID= PubMed ID 
+                You can reuse fields, though it's easy to end up with empty resultsets if you do this.
+                Reference: http://apps.webofknowledge.com/WOS_AdvancedSearch_input.do
+              - querystring is fed directly into ISI unchecked. You generally can use globbing here (*, $ ?, ...)
+                You can also (apparently) embed operator strings here.
+                Reference: http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_rules.html
+            - operator strings: AND, OR, NOT, NEAR, SAME; also fed into ISI unchecked.
+                Reference: http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_operators.html
+            The length of fields should be an odd number because there should be exactly one less operator than query pairs.
+            It also, apparently, should not contain more than 49 fields.
+            This is an awkward format; you're just going to have to DEAL WITH IT. It's better than trying to parse a string before feeding it.
+        startYear, endYear: the range of years to search.
+        editions: the list of WoS subsections to search:
+            #TODO: document what these are
+            The default is all known, so you can probably leave it alone mostly.
+        sort: the sort order to return
+            This isn't actually an option on the form, but it's sent along with the request and is useful
+            Currently, passed unchecked to ISI. Thus, it must be given in ISI's internal notation which is this pattern:
+            ({field}.{order}(.{lang})?;)*
+            * field is a field tag
+            * order is "A" for ascending or "D" for descending.
+            * lang is an optional 2-letter language code which only applies to certain fields; I don't know what this is for.
+            This is essentially a normal table order-by clause:
+                records are first sorted by the first field given; ties are broken by looking at the second, if given; ties in that are broken by looking at the third, etc
+                Additionally(??) there's extra fields allowed here not listed above? like "LC" which is the citation count (which, confusing, is given as "TC" in the ISI format).
+            The default puts most cited and oldest articles first, since those are probbbbbably the articles you care about if you're doing scraping.
+        
+        # TODO: if we don't get any results we get sent back to GeneralSearch.do; handle this case
+        
+        returns an ISIQuery object. See ISIQuery for how to proceed from there.
         """
         
-        r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
-                #headers={'Referer': session._referer},
-                # most of these were copied raw from a working query
-                # most of them are ridiculously unusable and redundant 
-                # but WHEN IN ROME
-                data={
-                    'fieldCount': '1', 'max_field_count': '25',
-                    'product': 'WOS', # 'UA',
+        max_field_count = 25
+        
+        # There are a lot of things that get posted to this form, even though it's just the simple search.
+        # most of these were copied raw from a working query
+        # most of them are ridiculously unusable and redundant and possibly ignored on the backend
+        # but WHEN IN ROME...
+        # 
+        # For readability, I split up the construction of the POST data into sections.
+        
+        # this is header stuff needed to convince the search engine to listen to us
+        form_target = {
+                    'product': 'WOS', # 'UA' == "all databases", "..." == korean thing, "..." = MedLine, ...; we want WOS because WOS can give us bibliographies, not just papers.
+                    'action': 'search', 
+                    'search_mode': 'GeneralSearch',
+                    'SID': self._SID, 
+        }
+        form_target = list(form_target.items())
+        
+        # this is crap ISI probably ignores
+        form_cruft = {
+                    'max_field_count': str(max_field_count), #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
                     # (the browser is sending hardcoded error messages as options in its *query*??)
                     'input_invalid_notice': 'Search Error: Please enter a search term.',
                     'exp_notice': 'Search Error: Patent search term could be found in more than one family (unique patent number required for Expand option) ',
@@ -191,23 +254,63 @@ class ISISession(requests.Session):
                         # but I suspect the system won't notice if it's missing...
                     'ss_spellchecking': 'Suggest', 'ssStatus': 'display:none',
                     'formUpdated': 'true',
-                    # these are the ones that you actually care about   
-                    'value(input1)': query,
-                    'value(select1)': 'TS', #TS = 'topic'
+                    }
+        form_cruft = list(form_cruft.items())
+        
+        # This is the actual fields
+        # This part is rather complicated. This ISI's fault.
+        def fields2isi():
+            """
+            this generator walks the input and reformats it into key-value pairs 
+            returns the number of fields searched (which you need to retrieve from the StopIteration)
+            Note: the number of times this yields is larger than the number of fields actually represented, because of ISI cruft, so you can't simply len() the result.
+            """
+            
+            for i in range(0, len(fields), 2):
+                t = i+1 #terms are indexed from 1
+                
+                # the field term
+                (field, querystring) = fields[i]
+                
+                yield ("value(select%d)" % t, field)
+                yield ("value(input%d)" % t, querystring) 
+                yield ("value(hidInput%d)" % t, "") #the fantastic spaztastic no-op hidden input field
+                
+                # the operand term
+                if fields[i+1:]:
+                    op = fields[i+1]
+                    assert op in ["AND","OR","NOT","SAME","NEAR"], "ISI only knows these operators"
+                    
+                else:
+                    # last field; don't include the operand term
+                    assert len(fields)-1 == i, "Double checking I got the if right"
+            
+            return t #the number of fields processed
+        
+        form_query, fieldCount = list_ret(fields2isi())
+        if fieldCount > max_field_count:
+            warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
+        form_query += list(({
+                    'fieldCount': str(fieldCount),
                     'startYear': str(startYear), 'endYear': str(endYear), 
-                    'rs_sort_by': 'PY.A;LD.D;SO.A;VL.D;PG.A;AU.A',
-                        # Codes here seem to be the same as in the ISI flat file format
-                        # PY = published year
-                        # TC = times cited
-                        # AU = author, etc....
-                        # and .A means "Ascending" and .D means "Descending"
-                        # I've set this to PY.A so that you get oldest articles first
-                    'range': 'ALL', #????
-                    # and these you need to make sure are correct
-                    'action': 'search', 
-                    'search_mode': 'GeneralSearch',
-                    'SID': self._SID, 
-                    })
+                    'rs_sort_by': sort,
+                    'range': 'ALL', #????,
+                    }).items())
+        form_query += [("editions", e) for e in editions] #this reuses the parameter name to pass an array (in contrast to the array of search terms which are passed by a list of differently named params). SWEET.
+        
+        # merge all the sections
+        # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
+        form = form_target + form_cruft + form_query
+        
+        print("SUBMITTING THIS SHIT")
+        print(form)
+        import IPython; IPython.embed() #DEBUG
+        
+        # Do the query
+        # this causes ISI to create and cache a resultset
+        r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
+                headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
+                data=form)
         r.raise_for_status()
         soup = BeautifulSoup(r.content)
         
@@ -241,6 +344,19 @@ class ISISession(requests.Session):
             warn("We have %d options: %s" % (len(bib_field_options), "; ".join(e.text.strip() for e in bib_field_options),))
         
         return ISIQuery(self, qid, count, estimated)
+        
+    def advancedSearch(self, query):
+        """
+        query should be a string in the form
+        #TODO: other options that advanced search allows, like "articles only"
+        """
+        raise NotImplementedError
+    
+    def search(self, topic):
+        """
+        perform a simple of the Web of Science
+        """
+        return self.generalSearch(('TS', topic))
     
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
@@ -424,7 +540,7 @@ if __name__ == '__main__':
         S.login(args.user, args.barcode) #TODO take from command line
         print("Logged into ISI as UW:%s." % (args.user,))
         print("Querying ISI for 'TS=%s'" % (args.topic,))
-        Q = S.query(args.topic)
+        Q = S.search(args.topic)
         print("Got %s%d results" % ("an estimated " if Q.estimated else "", len(Q)))
         print("Ripping resultset", Q)
         Q.rip("%s.isi" % (args.topic)) #just save to topic.isi; TODO: when we get more search options we'll need to rework this.
