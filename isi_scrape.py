@@ -375,6 +375,14 @@ class ISISession(requests.Session):
         
         # TODO: search for error message in output, translate it to an exception        
         
+        err = soup.find("div", id="client_error_input_message")
+        assert err is not None, "The result page *always* includes this div, even if there's no error"
+        err = err.text.strip()
+        if err:
+            #TODO: better exception
+            raise Exception("Search failed", err)
+        
+        
         qid = soup.find("input", {"name": "qid"})['value']
         #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
         #count = 10*int(soup.find(id="pageCount.top").text) #here's another idea
