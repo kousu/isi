@@ -6,4 +6,4 @@
 
 # records are ended by a single code "ER" on a line by itself.
 # if we count those we count how many complete records we have.
-egrep "^ER" $@ | wc -l
+egrep "^ER" "$@" | wc -l
