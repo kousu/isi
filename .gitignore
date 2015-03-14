@@ -4,8 +4,12 @@ isi_rip.logined.sh
 # backups
 *~
 
+# hide our data files
+# (these are paywalled!!)
+*.isi
 
 
+#-------------------------------------------------------
 # Github Python Defaults:
 
 # Byte-compiled / optimized / DLL files
