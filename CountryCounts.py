@@ -1,3 +1,5 @@
+#!/usr/bin/env python2
+
 import papers
 import os
 import csv
@@ -74,10 +76,13 @@ def csvLocCounter(plst, csvf):
         try:
             pdict[csvHeader[0]] = p['UT'][0]
             pdict[csvHeader[1]] = p['PY'][0]
-            try:
-                 pdict[csvHeader[1]] += ' ' + p['PD'][0]
-            except KeyError as e:
-                pass
+            if 'PD' in p:
+                # "PD", "published date", sometimes contains a date but more often contains only a month
+                # occasionally it contains a month range: MON-MON
+                # this is a giant pain, so just coerce to the first month mentioned
+                # *sometimes* it is missing entirely too
+                # TODO: find an ISI documentation reference for this format.
+                pdict[csvHeader[1]] += ' ' + p['PD'][0][:3]
             rp = p['RP'][0].split(',')
             pdict[csvHeader[2]] = rp[0] + ',' + rp[1][:-17]
             pdict[csvHeader[3]] = rp[-1][1:-1] if rp[-1][-4:-1] != 'USA' else 'USA'
@@ -92,7 +97,7 @@ if __name__ == '__main__':
         print outfile +  " already exists\nexisting"
         sys.exit()
         #os.remove(outfile)
-    flist = [f for f in os.listdir(".") if f.endswith(".isi")]
+    flist = sys.argv[1:] if sys.argv[1:] else [f for f in os.listdir(".") if f.endswith(".isi")]
     if len(flist) == 0:
         #checks for any valid files
         print "No isi Files"
