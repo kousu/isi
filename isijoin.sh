@@ -8,7 +8,7 @@ echo "FN Thomson Reuters Web of Science"
 echo "VR 1.0"
 
 for fname in "${@}"; do
-  tail -n +2 "${fname}" | head -n -2
+  tail -n +3 "${fname}" | head -n -1
 done
 
 echo "EF"
