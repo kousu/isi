@@ -28,7 +28,7 @@ def isiParser(isifile):
     """
     f = open(isifile, 'r')
     if "VR 1.0" not in f.readline() and "VR 1.0" not in f.readline():
-        raise BadPaper(file + " Does not have a valid header")
+        raise BadPaper(isifile + " Does not have a valid header")
     notEnd = True
     plst = []
     while notEnd:
