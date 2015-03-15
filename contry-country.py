@@ -102,7 +102,6 @@ if __name__ == '__main__':
     else:
         #Tells how many files were found
         print "Found " + str(len(flist)) + " txt files"
-
     G = nx.Graph()
     for isi in flist:
         try:
@@ -111,5 +110,6 @@ if __name__ == '__main__':
             print type(e)
             print isi
             print e
+            break
     nx.write_graphml(G, outfile)
     print "Done"
