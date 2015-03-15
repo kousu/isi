@@ -4,6 +4,7 @@ import papers
 import os
 import csv
 import sys
+import IPython
 
 csvHeader = ['Paper ID', 'Date', 'Subjects', 'RP-Author', 'RP-Country', 'Author', 'Author-Country']
 
@@ -144,7 +145,10 @@ def csvLocCounter(plst, csvf):
                             print "Has weird institute list " + con,
                     for auth in p['C1']:
                         pdict[csvHeader[5]] = auth
-                        inloc = condict[auth]
+                        if auth in condict:
+                            inloc = condict[auth]
+                        else:
+                            inloc = p['C1'][0]
                         pdict[csvHeader[6]] = inloc.split(',')[-1][1:-1] if inloc.split(',')[-1][-4:-1] != 'USA' else 'USA'
                         csvf.writerow(pdict)
             else:
@@ -153,6 +157,7 @@ def csvLocCounter(plst, csvf):
                 print '\n'.join(p['TI'])
                 raise Warning
         except KeyError as e:
+            raise
             print "No title"
             print '\n'.join(p['TI'])
         except Warning as w:
@@ -180,5 +185,6 @@ if __name__ == '__main__':
             except Exception, e:
                 print type(e)
                 print e
+                raise
         
     print "Done"
