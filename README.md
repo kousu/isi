@@ -2,7 +2,7 @@ ISI Tools
 ===========
 
 These are a bunch of tools for dealing with the ISI Web of Science.
-You can use them to extract, clean, and process article records in the [ISI Flat File format](TODO)..
+You can use them to extract, clean, and process article records in the [ISI Flat File format](TODO).
 
 Some examples of the sorts of work that can be done with this data:
 * Kieran Healy: [Gender and Citation](http://kieranhealy.org/blog/archives/2015/02/25/gender-and-citation-in-four-general-interest-philosophy-journals-1993-2013/)
