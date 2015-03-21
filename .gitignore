@@ -4,11 +4,17 @@ isi_rip.logined.sh
 # backups
 *~
 
+*.txt
+*.csv
 # hide our data files
 # (these are paywalled!!)
 *.isi
-#Derived from .isi
-*.csv
+ #Derived from .isi
+
+# hide processed output
+*.graphml
+*.gephi
+
 
 
 #-------------------------------------------------------
