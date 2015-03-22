@@ -7,7 +7,10 @@ python -m isiparse path/to/data.isi
 ```
 """
 
-
+# TODO:
+# [ ] rework strpisimonth to be strpisidate, returning a tuple instead of an integer;
+#     I *thought* the PD field was only ever month and maybe day, but sometimes it duplicates the year (PY) field too
+#     Once this works, write an assertion "not ('PY' in fields and 'PD' in fields and fields['PD'].year is not None) or (fields['PY'] == fields['PD'].year)
 
 class EmptyModule(): pass
 
@@ -39,16 +42,18 @@ class ISIFormatError(Exception):
 
 def strpisimonth(d, fmt):
     """
-    parse an ISI format "date" (PD field). This sometimes doesn't exist, sometimes includes a month, and sometimes includes a day.
+    parse an ISI format "date" (PD field). This sometimes doesn't exist, sometimes includes a month, and sometimes includes a day, and sometimes includes a year.
   
     Known formats:
     Month ("%b")
     Month Day ("%b %d")
     Month-Month ("%b-%b") --- this gets coerced to the first %b, dropping the month range
     Season ("%s") --- this gets coerced to use the first month of the given season
+    Month Day Year ("%b %d %Y")
+    Month Year ("%b %Y")
     
-    returns just the integer month, since we aren't going to use more resolution than that since the data isn't going to give it to us
-    (this is a helper routine for parse_isi_month(); the reason it's not an inner function is poor: it's so I can instrument it with wrapper functions from external modules)
+    
+    returns a tuple (year, month, day). This is like a datetime object, except that any of the three may be None to indicate missing data.
     """
     try:
         # handle the extension formats by a mixture of edits to the data and to fmt
@@ -84,7 +89,7 @@ def parse_month(m):
     """
     # try all the formats, starting with the most restrictive
     # strpisimonth requires an exact match so order shouldn't matter
-    for fmt in ["%b %d", "%b", "%b-%b", "%s"]:
+    for fmt in ["%b %d", "%b", "%b-%b", "%s", "%b %d %Y", "%b %Y"]:
         try:
             return strpisimonth(m, fmt) 
         except ValueError:
@@ -133,10 +138,10 @@ def records(isi):
 		for i, line in isi:
 			#print(i,line) #DEBUG (handy: can see *every line* go past)
 			#import IPython; IPython.embed()
-			# partition the line
-			# (note: EF, ER, and the blank line between records break the pattern, hence the verbose if chain)
-			# ( also being stateful and ordering ops choosily means we can reuse 'line' without worrying stomping it before the 'sep' check)
 			
+			# partition the line
+			# (note: EF, ER, and the blank line between records break the pattern, hence the verbose if-chain)
+			# ( also being stateful and ordering ops choosily means we can reuse 'line' without worrying stomping it before the 'sep' check)
 			if len(line) > 2:
 				sep = line[2]
 				if sep != ' ':
