@@ -493,7 +493,7 @@ class ISISession(requests.Session):
         #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
         count = parse_american_int(count)
         
-        return ISIQuery(self, 'CitingArticles', qid, r.url, count, False)
+        return ISIQuery(self, 'CitingArticles', qid, r.url, count, estimated)
     
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
@@ -777,7 +777,7 @@ class ISIQuery:
         # this ISIQuery() call is an outlier:
         # first because it's being run from within an ISIQuery
         # second because it has *two* options for what search_mode should be
-        return ISIQuery(self._session, params["search_mode"], qid, r.url, count, False)
+        return ISIQuery(self._session, params["search_mode"], qid, r.url, count, estimated)
         
     
     def rip(self, fname, upper_limit=20000):
