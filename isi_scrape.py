@@ -8,7 +8,7 @@ Example:
 ```
 S = AnonymizedUWISISession()  #unfortunately, this has only be designed and tested with @uwaterloo.ca
 S.login(your, credentials)
-Q = S.generalSearch(("TS", "cats"), "OR", ("PY", 2007))
+Q = S.generalSearch(("TS", "cats"), "OR", ("PY", 2007)) #search: subject 'cats' or year '2007'
 len(Q)
 Q.export("manycats.ciw", 22, 78)
 
@@ -31,6 +31,7 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 """
 
 #TODO:
+# [ ] Obvious refactoring: roll all the extract_() calls into ISIQuery.__init__()
 # [ ] rearchitect so that passwords are passed at __init__
 # [ ] Rearchitect to use composition instead of inheritence (namely: it's awks that ISISession exposes .post() and .get()) 
 #     Doing this while still maintaining the proxy trickery will be a sop.
@@ -51,7 +52,12 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 # [ ] Make python2 compatible (probably with liberal use of the python-future module)
 # [ ] Make ISIQuery more fully featured; in particular, it should be a lazily-loaded sequence which you can iterate over, extracting the basics (via screen scraping)
 # [ ] .rip() is a very scripty function. It basically expects an interactive user with a pristine filesystem; it should be not so noisy!
-#       Could it be written as an iterator over the result files? And then that could be combined inline with isijoin.py, and the 
+#       -> this is an MVC problem creeping in
+# [ ] make Queries record their parameters and write a __str__ which canonicallizes them into a text form, then implicitly use this as fname. Done right, this will really help provenance.
+#   -> or at the very least
+#   -> tricky because there are soooooooooooooooo many parameters; 
+# [ ] add random jitter between requests so we don't look so bottyen as an iterator over the result files? And then that could be combined inline with isijoin.py, and the 
+
 
 # stdlib imports
 import sys, os
@@ -60,6 +66,7 @@ from warnings import warn
 import traceback
 
 from itertools import count, cycle
+import copy
 from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
 
 # library imports
@@ -74,7 +81,145 @@ from util import *
 from httputil import *
 
 
-class ISIError(Exception): pass
+class ISIError(HTTPError):
+    # TODO: ISI has an inheritence tree of errors available in query param "message_key"; is that tree worth replicating?
+    # TODO: this isn't integrating with the requests exception tree properly
+    KEY = None #override this in subclasses
+    def __init__(self, message_key, msg = None):
+        assert self.KEY is None or message_key == self.KEY
+        self.message_key = message_key
+        self.msg = msg
+    def __str__(self):
+        return "<%s: %s%s>" % (type(self).__name__, self.message_key, ": " + self.msg if self.msg else "")
+        
+
+class InvalidInput(ISIError):
+    KEY = "Server.invalidInput"
+    
+class NoRecordsFound(ISIError):
+    KEY = "errors.search.noRecordsFound"
+    
+
+# ISIErrors map themelves to error codes 
+# make a reverse mapping, so we can look them up at runtime
+ISIError.ALL = {e.KEY: e for e in list(locals().values())  if isinstance(e, type) and issubclass(e, ISIError)}
+
+def extract_qid(soup):
+    """
+    screenscrape the qid of the given query result page
+    
+    """
+    # depending on page, the qid shows up in multiple places
+    # The most reliable choice seems to be the hidden form field
+    # used so that when you do a refinement search the qid you're coming from gets remembered
+    return int(soup.find("input", {"name": "qid"})['value'])
+
+def extract_count(soup):
+    """
+    screenscrape the count of records for the current qid
+    this returns a flag if the result is estimated (to be passed through to ISIQuery).
+     This is complexity, but there's just no other way: sometimes we simply do not have enough data.
+    
+    returns: (count, estimated)
+    """
+    
+    # ideas:
+    # - the hitCount.top div (unreliable because on some but not all pages, is constructed *by javascript*)
+    # - take the page count, multiply by the page step (inaccurate)
+    # - look at the bottom of the page (again, unreliable)
+    
+    estimated = True #default to the conservative option: saying 'this result sucks'
+    
+    count = soup.find(id="footer_formatted_count")
+    if count is not None:
+        # found at the bottom of the page
+        count = count.text
+        estimated = "approximately" in count.lower()
+        
+        count = count.split()[-1] #chomps the 'approximately', if it exists
+    else:
+        # 
+        count = soup.find(id="hitCount.top")
+        if count is not None:
+            # found in hitCount.top div
+            count = count.text
+            #TODO: there's probably hitCount.top pages that have estimated results, and we totally ignore that case
+        else:
+            raise ValueError("Query count not found on page")
+    
+    count = parse_american_int(count)
+    return count, estimated
+
+def extract_search_mode(soup):
+    """
+    [...]
+    """
+    search_mode = soup.find("input", {"name": "search_mode"})
+    if search_mode is None:
+        # retry with 'search_mode1', which shows up on some but not all pages
+        search_mode = soup.find("input", {"name": "search_mode1"}) #LOL
+        if search_mode is None:
+            raise ValueError("search_mode not found on page")
+    
+    search_mode = search_mode['value']
+    return search_mode
+
+
+class ISIResponse(requests.Response):
+    """
+    Wrap an requests.Response to translate ISI's frustratingly non-standard
+    non-HTTP-error error messages into the python-requests framework
+    """
+    def __new__(cls, response, *args, **kwargs):
+        #print("ISIResponse.__new__:", cls, id(response), response, args, kwargs) #DEBUG
+        # a canonical wrapper would use {g,s}etattr() overloading
+        # why do that when we can just carefully tweak the class response thinks it is?
+        # this has the same effect: it adds all the methods defined below to the object's search path, walking up to requests.Response otherwise
+        #
+        # I hope this doesn't bite us down the line
+        assert isinstance(response, cls.__mro__[1]), "Make sure the argument is in the expected inheritence tree"
+        response = copy.copy(response)
+        response.__class__ = cls
+        
+        # DEBUG
+        # being able to see what ISI gives back helps, especially since ISI seems to return 200 OK for *everything* except actual URL typos
+        #with open("what.html","w") as what:
+        #    what.write(soup.prettify())
+        
+        return response
+    
+    def __init__(self, response, *args, **kwargs): #this is only defined to silence the 'response' argument
+        #print("ISIResponse.__init__:", id(self), self, id(response), args, kwargs) #DEBUG
+        pass #we're already initialized because we copy-constructed in __new__()
+        
+    def raise_for_status(self):
+        """
+        raise an error on HTTP status messages *or* on on errors from the ISI thingy 
+        
+        """
+        # first call up, because a 404 will prevent us doing all the rest of the checks
+        #super().raise_for_status()
+        requests.Response.raise_for_status(self)  #<-- copy.copy() breaks super(); for now, hardcode the parent class. TODO: figure out what magic bit needs twiddling.
+        
+        # TODO: look at message_key=errors.search.noRecordsFound&error_display_redirect=true instead
+        # client_error_input_message is not always where the error is writting; there's also noHitsMessage and newErrorHead
+        # 
+        
+        params = qs_parse(urlparse(self.url).query)
+        if 'error_display_redirect' in params:
+            assert params['error_display_redirect'] == 'true', "ISI only gives this tag if an error actually happened"
+            assert 'message_key' in params, "and in that case, it will give the error key in this"
+            err = params['message_key']
+            
+            # TODO: if we see an error, extract the text to go with it by screen scraping (but not before!)
+            msg = ""
+            #soup = BeautifulSoup(self.content)
+            #msg = soup.find("div", id="client_error_input_message") #TODO: this can occur on any(?) request to ISI: to; we should wrap all of them into exceptions; perhaps this means an extra layer of indirection: make isisession speak *only* to the ISI site and put code in post() and get() and put() that wraps screenscraped errors into Exceptions
+            #assert msg is not None, "The result page *always* includes this div, even if there's no error"
+            #msg = err.text.strip()
+            
+            raise ISIError.ALL.get(err, ISIError)(err, msg) #look up the appropriate ISIError, falling back on ISIError itself if not known, and instantiate it
+        
 
 class ISISession(requests.Session):
     """
@@ -94,14 +239,16 @@ class ISISession(requests.Session):
         # TODO.. other key things to scrape??
     
     def request(self, *args, **kwargs):
-        return super().request(*args, **kwargs)
+        response = super().request(*args, **kwargs)
+        response = ISIResponse(response)
+        return response
     
     
     def _generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
         Backend for generalSearch(); factored out since some of the other extractions *can only work by first doing a regular search*. ugh.
         
-        returns (HTTPResponse, BeautifulSoup).
+        returns HTTPResponse
         """
         max_field_count = 25
         
@@ -243,29 +390,7 @@ class ISISession(requests.Session):
         r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
                 headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
                 data=form)
-        r.raise_for_status()
-        
-        soup = BeautifulSoup(r.content)
-        
-        # DEBUG
-        # being able to see what ISI gives back helps, especially since ISI seems to return 200 OK for *everything*
-        #with open("generalSearch()_result.html","w") as what:
-        #    what.write(soup.prettify())
-        
-        #print("performed a query; dropping to shell; query result is in r and soup")
-        #import IPython; IPython.embed()
-        
-        # TODO: search for error message in output, translate it to an exception        
-        
-        err = soup.find("div", id="client_error_input_message") #TODO: this can occur on any(?) request to ISI: to; we should wrap all of them into exceptions; perhaps this means an extra layer of indirection: make isisession speak *only* to the ISI site and put code in post() and get() and put() that wraps screenscraped errors into Exceptions
-        assert err is not None, "The result page *always* includes this div, even if there's no error"
-        err = err.text.strip()
-        if err:
-            #TODO: better exception
-            raise ISIError("Search failed", err)
-            
-        return r, soup
-        # TODO:  this is ugly; watdo? the use of this is that we can factor the common error checking in here
+        return r
         
     def generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
@@ -357,19 +482,18 @@ class ISISession(requests.Session):
         
         returns an ISIQuery object. See ISIQuery for how to proceed from there.
         """
-        r, soup = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
+        r = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
+        r.raise_for_status()
         
-        qid = soup.find("input", {"name": "qid"})['value']
-        #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
-        #count = 10*int(soup.find(id="pageCount.top").text) #here's another idea
-        count = soup.find(id="footer_formatted_count").text
-        estimated = "approximately" in count.lower()
-        count = count.split()[-1] #chomp the 'approximately', if it exists
-        #locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
-        #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
-        count = parse_american_int(count)
+        soup = BeautifulSoup(r.content)
         
-        return ISIQuery(self, 'GeneralSearch', qid, r.url, count, estimated)
+        qid = extract_qid(soup)
+        count, estimated = extract_count(soup)
+        search_mode = extract_search_mode(soup)
+        
+        assert search_mode == 'GeneralSearch'
+        
+        return ISIQuery(self, search_mode, qid, r.url, count, estimated)
         
     def advancedSearch(self, query):
         """
@@ -441,13 +565,16 @@ class ISISession(requests.Session):
                      headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
                      params=form) #the outlinks page takes query params, not form POST params; luckily python-requests makes this distinction trivial
         r.raise_for_status()
+        
         soup = BeautifulSoup(r.content)
         
-        qid = soup.find("input", {"name": "qid"})['value']
-        count = soup.find(id="hitCount.top").text  #<--unlike the other searches
-        count = parse_american_int(count)
+        qid = extract_qid(soup)
+        count, estimated = extract_count(soup)
+        search_mode = extract_search_mode(soup)
         
-        return ISIQuery(self, 'CitedRefList', qid, r.url, count, False)
+        assert search_mode == 'CitedRefList'
+        
+        return ISIQuery(self, search_mode, qid, r.url, count, estimated)
     
     def inlinks(self, document):
         """
@@ -457,8 +584,15 @@ class ISISession(requests.Session):
         assert is_WOS_number(document)
         
         # there is no way to go for the jugular with this one
-        # so, first we do once search, then extract the magic link, then hit that
-        r, soup = self._generalSearch(("UT", document))
+        # there is a magic REFID number (an ISI-global ID?) which is *not* the
+        # WOS number and has no obvious embedded in a link labeled "Times Cited"
+        # We do an entire search just to extract the magic link.
+        # And we cannot just use generalSearch() because there's no
+        # reasonable way for an ISIQuery to know the magic REFID numbers.
+        r = self._generalSearch(("UT", document))
+        r.raise_for_status()
+        
+        soup = BeautifulSoup(r.content)
         
         records = soup(class_="search-results-item")
         assert len(records) == 1, "Since we searched by WOS number, we should only have one result"
@@ -481,19 +615,13 @@ class ISISession(requests.Session):
         r.raise_for_status()
         soup = BeautifulSoup(r.content)
         
-        #XXX COPYPASTED FROM ABOVE
-        #TODO FACTOR FACTOR FACTOR
-        qid = soup.find("input", {"name": "qid"})['value']
-        #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
-        #count = 10*int(soup.find(id="pageCount.top").text) #here's another idea
-        count = soup.find(id="footer_formatted_count").text
-        estimated = "approximately" in count.lower()
-        count = count.split()[-1] #chomp the 'approximately', if it exists
-        #locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
-        #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
-        count = parse_american_int(count)
+        qid = extract_qid(soup)
+        count, estimated = extract_count(soup)
+        search_mode = extract_search_mode(soup)
         
-        return ISIQuery(self, 'CitingArticles', qid, r.url, count, estimated)
+        assert search_mode == 'CitingArticles'
+        
+        return ISIQuery(self, search_mode, qid, r.url, count, estimated)
     
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
@@ -543,25 +671,6 @@ class ISIQuery:
     def __len__(self):
         return self._len
     
-    def export(self, fname, start=1, end=500, format="fieldtagged"):
-        """
-        Request records export via the "Save to Other File Formats" dialog.
-        Export records for the current query startinf running start through end-1.
-        
-        format:
-         - fieldtagged or othersoftware -- ISI Flat File format
-         - {win,mac}Tab{Unicode,UTF8}   -- variants of TSV
-         - bibtex                       -- for LaTeX junkies
-         - html                         -- if you hate yourself
-        
-        Returns the HTTP response from ISI's OutboundService.do,
-        because I don't want to corner your choices, though this
-        does mean you get more information than you expect, probably.
-        """
-        r = self._export(start, end, format)
-        print("Exporting records [%d,%d) to %s" % (start, end, fname), file=sys.stderr) #TODO: if we start multiprocessing with this, we should print the query in here to distinguish who is doing what. Though I suppose printing the filename is equally good.
-        with open(fname,"wb") as w:
-            w.write(r.content) #.content == binary => "wb"; .text would => "w"
     
     def _export(self, start, end, format="fieldtagged"):
         """
@@ -669,15 +778,31 @@ class ISIQuery:
         r = self._session.post("http://apps.webofknowledge.com/OutboundService.do?action=go",
                            headers={'Referer': self.referer},
                            data=params)
-        
-        r.raise_for_status()
-        #print("performed an export; dropping to shell; query result is in r")
-        #import IPython; IPython.embed()
-        # translate WOS's happy-go-lucky 302 to a 200 OK with a small little error message into an actual exception
-        print("export result:", r.url)
-        if "error_display_redirect" in qs_parse(urlparse(r.url).query):
-            raise HTTPError("404: invalid export range requested (i guess)")
         return r
+    
+    def export(self, fname, start=1, end=500, format="fieldtagged"):
+        """
+        Request records export via the "Save to Other File Formats" dialog.
+        Export records for the current query startinf running start through end-1.
+        
+        format:
+         - fieldtagged or othersoftware -- ISI Flat File format
+         - {win,mac}Tab{Unicode,UTF8}   -- variants of TSV
+         - bibtex                       -- for LaTeX junkies
+         - html                         -- if you hate yourself
+        
+        Returns the HTTP response from ISI's OutboundService.do,
+        because I don't want to corner your choices, though this
+        does mean you get more information than you expect, probably.
+        """
+        r = self._export(start, end, format)
+        r.raise_for_status()
+        
+        # TODO: logging.debug()
+        print("Exporting records [%d,%d) to %s" % (start, end, fname), file=sys.stderr) #TODO: if we start multiprocessing with this, we should print the query in here to distinguish who is doing what. Though I suppose printing the filename is equally good.
+        with open(fname,"wb") as w:
+            w.write(r.content) #.content == binary => "wb"; .text would => "w"
+    
     
     def bulk_inlinks(self, loops=True):
         """
@@ -761,23 +886,17 @@ class ISIQuery:
         r.raise_for_status()
         soup = BeautifulSoup(r.content)
         
-                
-        #XXX COPYPASTED FROM ABOVE
-        #TODO FACTOR FACTOR FACTOR
-        qid = soup.find("input", {"name": "qid"})['value']
-        #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
-        #count = 10*int(soup.find(id="pageCount.top").text) #here's another idea
-        count = soup.find(id="footer_formatted_count").text
-        estimated = "approximately" in count.lower()
-        count = count.split()[-1] #chomp the 'approximately', if it exists
-        #locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
-        #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
-        count = parse_american_int(count)
+        qid = extract_qid(soup)
+        count, estimated = extract_count(soup)
+        search_mode = extract_search_mode(soup)
+        
+        assert search_mode == params["search_mode"]
+        
         
         # this ISIQuery() call is an outlier:
         # first because it's being run from within an ISIQuery
         # second because it has *two* options for what search_mode should be
-        return ISIQuery(self._session, params["search_mode"], qid, r.url, count, estimated)
+        return ISIQuery(self._session, search_mode, qid, r.url, count, estimated)
         
     
     def rip(self, fname, upper_limit=20000):
@@ -787,12 +906,6 @@ class ISIQuery:
         fname: file name. used as a template: if fname == "fname.ext" then records will be exported to ["fname_0001.ext", "fname_0501.ext", ...] 
         upper_limit: the largest record index to export; use this to make an easy guarantee that you won't get stomped by ISI for chewing through their data.
         """
-        
-        # TODO:
-        # [ ] make Queries record their parameters and write a __str__ which canonicallizes them into a text form, then implicitly use this as fname. Done right, this will really help provenance.
-        #   -> or at the very least
-        #   -> tricky because there are soooooooooooooooo many parameters; 
-        # [ ] add random jitter between requests so we don't look so botty
         
         #note!: the web UI declines to let you export more records than available, however the API will accept such a request and just only give you which records it has available.
         #       Here, the *last record block* is making such an illegal request: it requests 500 even if there's only one; it's currently working but it might break if ISI tightens up their game. 
@@ -805,9 +918,12 @@ class ISIQuery:
             fname = "%s_%04d%s" % (base_name, block, ext)
             try:
                 r = self.export(fname, block, block+500)
-            except HTTPError as exc:
+            except InvalidInput as exc:
+                # break when we run off the end of the valid inputs
+                # this is just a littttle bit flakey
                 #print("quitting on block %d due to:" % (k,)) #DEBUG
-                #traceback.print_exc()
+                #print(exc, file=sys.stderr) #DEBUG
+                #traceback.print_exc() #DEBUG
                 break
     
     def __str__(self):
