@@ -1,17 +1,20 @@
 # hide password!
+# sorry these can't be committed as they stand.
 isi_rip.logined.sh
+test_*.py
 
 # backups
 *~
 
-*.txt
-*.csv
 # hide our data files
 # (these are paywalled!!)
+*.ciw
 *.isi
- #Derived from .isi
+*.txt
+*.csv
 
 # hide processed output
+# derived from data files
 *.graphml
 *.gephi
 
