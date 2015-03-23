@@ -651,10 +651,16 @@ class ISIQuery:
                             })
         elif self._search_mode == 'TotalCitingArticles':
             # CitationReport > Citing articles
-            raise NotImplementedError
+            params.update({'view_name': 'WOS-TotalCitingArticles-summary',
+                            
+                            # apparently mode can be left at default here?
+                            })
         elif self._search_mode == 'NonSelfCitingTCA':
             # CitationReport > Non-self-citing articles
-            raise NotImplementedError
+            params.update({'view_name': 'WOS-NonSelfCitingTCA-summary',
+                            
+                            # apparently mode can be left at default here?
+                            })
         else:
             raise ValueError("Unknown search_mode '%s'" % (self._search_mode,)) #XXX check this in __init__ instead?
         
@@ -733,7 +739,11 @@ class ISIQuery:
         params = {'product': 'WOS',
                   'qid': citationreport_qid,
                   'SID': self.SID,
-                  'betterCount': 10, #this seems to be ignored? TODO: fuzz this
+                  'betterCount': "Soy sauce as a stimulative agent in the development of beriberi in pigeons", #this is not ignored, but rather
+                  #*if an integer* is fed straight into the count on the resultset page; if not an integer, ISI computes the proper value. Hurrah!.
+                  # This is just a UI glitch; export() can extract all records regardless,
+                  # but we should try to not make the API appear inconsistent.
+                  # (this string is a paper in the WOS database. cutting edge science!)
                   }
         if loops:
             link = "/TotalCitingArticles.do"
