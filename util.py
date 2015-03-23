@@ -31,3 +31,12 @@ def flatten(L):
     """
     return list(chain.from_iterable(L))
 
+
+def parse_american_int(c):
+    """
+    Parse an integer, possibly an American-style comma-separated integer.
+    """
+    if not isinstance(c, str):
+        raise TypeError
+    #dirty hack; also what SO decided on: http://stackoverflow.com/questions/2953746/python-parse-comma-separated-number-into-int
+    return int(c.replace(",",""))

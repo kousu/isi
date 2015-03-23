@@ -27,7 +27,9 @@ from bs4 import BeautifulSoup
 
 from warnings import warn
 
-from util import flatten
+from util import *
+
+from isiparse import is_WOS_number
 
 
 #------------ utils
@@ -100,6 +102,9 @@ class UWProxy(requests.Session):
     def request(self, verb, url, *args, **kwargs):
         """
         Rewrite all requests going through this session to go through the library proxy.
+        
+        Of course, the library proxy is not a standard HTTP proxy at all: it does its own thing.
+        Luckily, the protocol is pretty simple: just tack on a domain and make sure to send the right cookie.
         """
         assert self._logged_in == "logging_in" or self._logged_in, "Must be logged in to use the library proxy" #it will 302 to the login page if you're not; since this would be confusing when scripting, just disallow it.
         
@@ -181,7 +186,7 @@ class ISISession(requests.Session):
                     SU= Research Area
                     WC= Web of Science Category
                     IS= ISSN/ISBN
-                    UT= Accession Number
+                    UT= Accession Number (aka WOS number: the unique document ID within the WOS database)
                     PMID= PubMed ID 
                 You can reuse fields, though it's easy to end up with empty resultsets if you do this.
                 Reference: http://apps.webofknowledge.com/WOS_AdvancedSearch_input.do
@@ -246,7 +251,7 @@ class ISISession(requests.Session):
         # For readability, I split up the construction of the POST data into a sections, with a generator for each.
         # They are underscored to avoid conflicts with the input arguments.
         
-        def _target():
+        def _session():
             """ 
             This is header stuff needed to convince the search engine to listen to us
             """
@@ -360,7 +365,7 @@ class ISISession(requests.Session):
         # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
         # += on a list L and a generator G is the same as .extend(); note that L + G will *not* work.
         form = []
-        form += _target()
+        form += _session()
         form += _cruft()
         form += _fields()
         form += _sort_order()
@@ -387,7 +392,7 @@ class ISISession(requests.Session):
         
         # TODO: search for error message in output, translate it to an exception        
         
-        err = soup.find("div", id="client_error_input_message")
+        err = soup.find("div", id="client_error_input_message") #TODO: this can occur on any(?) request to ISI: to; we should wrap all of them into exceptions; perhaps this means an extra layer of indirection: make isisession speak *only* to the ISI site and put code in post() and get() and put() that wraps screenscraped errors into Exceptions
         assert err is not None, "The result page *always* includes this div, even if there's no error"
         err = err.text.strip()
         if err:
@@ -403,12 +408,12 @@ class ISISession(requests.Session):
         count = count.split()[-1] #chomp the 'approximately', if it exists
         #locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
         #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
-        count = int(count.replace(",","")) #dirty hack; also what SO decided on: http://stackoverflow.com/questions/2953746/python-parse-comma-separated-number-into-int
-        
+        count = parse_american_int(count)
         
         # warn if we don't have access to citation records
         # As far as I can tell, the only way to find this out is by looking for if the output form gives the option.
         # You can also just try downloading with citation records and looking if it actually gives them to you or not, but that's sketchier
+        # TODO: this is probably totally irrelevant now that we have outlinks(), and even before that not having this access is not critical.
         soup = BeautifulSoup(r.content)
         soup = BeautifulSoup(soup.find(id="qoContentTemplate").text) # the div that contains the output form is not in the HTML: it's in a script tag of type "text/template". so BeautifulSoup misses it.
         soup = soup.find("select", id="bib_fields")
@@ -417,7 +422,7 @@ class ISISession(requests.Session):
             warn("We appear to not have access to ISI's We cannot export citation records.")
             warn("We have %d options: %s" % (len(bib_field_options), "; ".join(e.text.strip() for e in bib_field_options),))
         
-        return ISIQuery(self, qid, count, estimated)
+        return ISIQuery(self, 'GeneralSearch', qid, count, estimated)
         
     def advancedSearch(self, query):
         """
@@ -441,16 +446,72 @@ class ISISession(requests.Session):
         MLA-esque single line citations; this API actually gives you the full records.
         We make no guarantees that these results match up to the "CR" results; that's up
         to ISI (and their database is full of varying formats and inconsistencies). 
+        
+        Unlike generalSearch(), results are always returned alphabetical by author name.
+        
+        If you use this across a set of related records, you are likely to get duplicates.
+        You will just have to merge them by WOS number.
+        
+        The WOS includes citation records for articles which it does not have in its database.
+        In this case, the missing records are simply elided during ISIQuery.export().
+        If your record counts are not adding up, and especially if you are getting empty .ciw files,
+        try the search by hand and see if the results lists "Title: [not available]".
+        
+        This method does not pretend very well to be a proper browser:
+         a proper browser would first search for the WOS number with WOS_GeneralSearch.do
+         then click on the link to the article's full_record.do page
+         then click on the InterService.do link.
+        This method goes straight for the jugular.
         """
-        assert is_wos_number(document)
-        raise NotImplementedError
+        assert is_WOS_number(document)
+        
+        def _session():
+            yield "product", "WOS"
+            yield "last_prod", "WOS"
+            yield "parentProduct", "WOS"
+            yield "toPID", "WOS"
+            yield "fromPID", "WOS"
+            yield "action", "AllCitationService"
+            yield "search_mode", "CitedRefList"
+            yield "isLinks", "yes" #maybe this belongs in cruft()
+            yield "SID", self._SID
+        
+        def _cruft():
+            yield "returnLink", "http://gilgamesh" #this is, apparently, ignored. Still, TODO: something reasonable, like maybe the same value as headers.referer
+            yield "srcDesc", "RET2WOS"
+            yield "srcAlt", 'Back+to+Web+of+Science<span+class="TMMark">TM</span>' #HAHAHAHAH
+            yield "parentQid", 1 #this is ignored, apparently
+            yield "parentDoc", 1 #this too; though you'd think that this should somehow be linked to the WOS number you're earc
+            yield "PREC_REFCOUNT", 1 #wot?
+            yield "fromRightPanel", "true"
+        
+        def _query():
+            yield "UT", document # this is actually irrelevant: this is used to generate the "From:" header on the page, but it does not affect the search results, hilariously
+            yield "recid", document #this one controls the actual search results
+        
+        form = []
+        form += _session()
+        form += _cruft()
+        form += _query()
+            
+        r = self.get("http://apps.webofknowledge.com/InterService.do",
+                 #headers={"Referer": "Gilgamesh",}, #TODO
+                 params=form) #the outlinks page takes query params, not form POST params; luckily python-requests makes this distinction trivial
+        r.raise_for_status()
+        soup = BeautifulSoup(r.content)
+        
+        qid = soup.find("input", {"name": "qid"})['value']
+        count = soup.find(id="hitCount.top").text
+        count = parse_american_int(count)
+        
+        return ISIQuery(self, 'CitedRefList', qid, count, False)
     
     def inlinks(self, document):
         """
         Given an ISI document ID (aka WOS number aka UT field aka Accession Number),
         get an ISIQuery over all the documents that cites it.
         """
-        assert is_wos_number(document)
+        assert is_WOS_number(document)
         raise NotImplementedError
     
     #def __str__(self):
@@ -492,15 +553,22 @@ class ISIQuery:
     
     This class is a brittle nougat shell around a creamy WoS result set.
     """
-    def __init__(self, session, qid, N=None, estimated=None):
+    def __init__(self, session, search_mode, qid, N=None, estimated=None):
         """
         N is the number of results in the query set, if known.
+        search_mode: 'GeneralSearch', 'AdvancedSearch', or 'CitedRefList'
+            This is needed to properly tweak the behaviour of the request
+            to match the type of search on the server in qid. Incorrect,
+            instead of an error, ISI will simply export an empty UTF-8 file
+             (it will have exactly two bytes: the Unicode BOM)
+             TODO: perhaps this is a good place to use an inheritence tree instead of an embedded if-else tree?
         """
         self._session = session
         self.SID = session._SID
         self.qid = qid
         self._len = N
         self.estimated = estimated
+        self.search_mode = search_mode
     
     def __len__(self):
         return self._len
@@ -524,23 +592,15 @@ class ISIQuery:
         assert start < end
         assert end - start <= 500, "ISI disallows more than 500 records at a time"
         
-        r =self._session.post("http://apps.webofknowledge.com/OutboundService.do?action=go",
-                           #headers={...},
-                           data={
-                            'IncitesEntitled': 'no',
-                            'count_new_items_marked': '0',
-                            'displayCitedRefs': 'true',
-                            'displayTimesCited': 'true',
+        params = {
                             # export ALL THE THINGS
                             # TODO: make configurable
                             'fields_selection': 'PMID USAGEIND AUTHORSIDENTIFIERS ACCESSION_NUM FUNDING SUBJECT_CATEGORY JCR_CATEGORY LANG IDS PAGEC SABBR CITREFC ISSN PUBINFO KEYWORDS CITTIMES ADDRS CONFERENCE_SPONSORS DOCTYPE CITREF ABSTRACT CONFERENCE_INFO SOURCE TITLE AUTHORS  ',
                             'filters': 'PMID USAGEIND AUTHORSIDENTIFIERS ACCESSION_NUM FUNDING SUBJECT_CATEGORY JCR_CATEGORY LANG IDS PAGEC SABBR CITREFC ISSN PUBINFO KEYWORDS CITTIMES ADDRS CONFERENCE_SPONSORS DOCTYPE CITREF ABSTRACT CONFERENCE_INFO SOURCE TITLE AUTHORS  ',
                             
-                            'format': 'saveToFile', # this is called 'format' but it's not actually the format. I guess this is like, the format of the request or something.
-                            'mode': 'OpenOutputService', # I bet WOS is programmed in Java.
-                            'save_options': format,
                             
                             # TODO: make configurable
+                            'sortBy': 'PY.A;LD.D;SO.A;VL.D;PG.A;AU.A',
                             'locale': 'en_US',
                             
                             # DUPLICATED LOL
@@ -556,25 +616,62 @@ class ISIQuery:
                             
                             # now this part is important
                             'SID': self._session._SID,
+                            'search_mode': self.search_mode,
                             'qid': self.qid,
                             
-                            # this too?
-                            # guess not
-                            #'queryNatural': '(CU=Tunisia and TS=medicine) <i> AND </i><b>DOCUMENT TYPES:</b> (Article)',
-                            #'rurl': 'http%3A%2F%2Fapps.webofknowledge.com%2Fsummary.do%3FSID%3D4FhguMhJ6eAMjJarZfa%26product%3DWOS%26doc%3D1%26qid%3D10%26search_mode%3DAdvancedSearch',
+                            'mode': 'OpenOutputService', # I bet WOS is programmed in Java.
+                            'format': 'saveToFile', # this is called 'format'; this corresponds to the ["Save to EndNote Online", "Save to EndNote Desktop", ..., "Save to Other File Formats", ...] dropdown.                                               
+                            'save_options': format, # for our purposes, it's not actually the format; we choose "save to other file formats" always and fill in which sub-format via save_options.
+                                                    # (format, save_options) = ("saveToRef", _) is identical to both ("saveToFile", {"fieldtagged","othersoftware"}): it gives the ISI Flat File format.
+                                                    # the one difference is it sets the extension to .ciw instead of .txt, but we ignore the Content-Disposition header anyway. 
                             
-                            # uhhh
-                            #'search_mode': 'AdvancedSearch',
-                            'sortBy': 'PY.A;LD.D;SO.A;VL.D;PG.A;AU.A',
-                            'value(record_select_type)': 'range',
+                            # cruft?
+                            'displayCitedRefs': 'true',
+                            'displayTimesCited': 'true',
+                            
                             'viewType': 'summary',
-                            'view_name': 'WOS-summary'
+                            'view_name': 'WOS-summary',
+                            'IncitesEntitled': 'no',
+                            'count_new_items_marked': '0',
+                            
+                            'value(record_select_type)': 'range', #if set to 'pagerecords' then
+                            'selectedIds': '',                    #<-- this gives a semicolon-separated list of indexes of which records to extract 
+                            
+                            'rurl': 'http://isiknowledge.com', #yep TODO: this should be generated by a combination of qid, search_mode, and guessing
+                            'queryNatural': '<b>TOPIC</b>: EVERYTHING IS AWESOME WHEN YOURE PART OF A TEAM', #..this one is just going to have to be stuck like this
+                           }
+        
+        # append mode-specific cruft
+        # (some of these are actually updates, overwriting the defaults extracted from GeneralSearch
+        if self.search_mode == 'GeneralSearch':
+            #params.update({})
+            pass #defaults above were extracted from GeneralSearch mode
+        elif self.search_mode == 'AdvancedSearch':
+            raise NotImplementedError
+        elif self.search_mode == 'CitedRefList':
+            params.update({'mode': 'CitedRefList-OpenOutputService',
+                           'mark_id': 'UDB', #???? this seems to be ignored, but is set differently in CitedRefList mode
+                           
+                           # *undo* the DOWNLOAD ALL THE THINGS option
+                           # TODO: experiment with this; can we get ALL THE THINGS even out of CitedRefList-OpenOutputService?
+                           'fields_selection': 'AUTHORSIDENTIFIERS ISSN_ISBN ABSTRACT SOURCE TITLE AUTHORS  ',
+                           'filters': 'AUTHORSIDENTIFIERS ISSN_ISBN ABSTRACT SOURCE TITLE AUTHORS  ',
+                            
                            })
+        else:
+            raise ValueError("Unknown search_mode '%s'" % (self.search_mode,)) #XXX check this in __init__ instead?
+        
+        assert len(params) == 27, "Expected number of params, extracted by hand-counting in Firefox's web inspector"
+        # fire!
+        r = self._session.post("http://apps.webofknowledge.com/OutboundService.do?action=go",
+                           #headers={...},
+                           data=params)
         
         r.raise_for_status()
         #print("performed an export; dropping to shell; query result is in r")
         #import IPython; IPython.embed()
         # translate WOS's happy-go-lucky 302 to a 200 OK with a small little error message into an actual exception
+        print("export result:", r.url)
         if "error_display_redirect" in qs_parse(urlparse(r.url).query):
             raise HTTPError("404: invalid export range requested (i guess)")
         return r

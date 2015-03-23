@@ -24,12 +24,13 @@ def is_WOS_number(w):
     check that the string w is a WOS number
     You find these in the 'UT' field in exported .isi files.
     It is also called the "Accession Number"
+    
+    The format of this is "WOS:ddddddddddddddd": the 'd's are usually digits, but sometimes they are capital letters; sometimes they encode dates in them, and sometimes they seem totally arbitrary.
     """
     try:
         header, number = w[:4], w[4:]
         assert header == "WOS:"
         assert len(number) == 15
-        assert all(int(e) for e in number))
     except: #<-- ugh, lazy
         return False
     
