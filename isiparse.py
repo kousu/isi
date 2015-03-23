@@ -26,6 +26,8 @@ def is_WOS_number(w):
         assert all(int(e) for e in number))
     except: #<-- ugh, lazy
         return False
+    
+    return True
 
 
 class EmptyModule(): pass
