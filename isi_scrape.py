@@ -1,38 +1,78 @@
 #!/usr/bin/env python3
+"""
+Scraper for the ISI Web of Science
 
-# TODO:
+See README.md for goals and overview.
+
+Example:
+```
+S = AnonymizedUWISISession()  #unfortunately, this has only be designed and tested with @uwaterloo.ca
+S.login(your, credentials)
+Q = S.generalSearch(("TS", "cats"), "OR", ("PY", 2007))
+len(Q)
+Q.export("manycats.ciw", 22, 78)
+
+from isiparse import reader
+p1 = next(iter(reader("manycats.ciw")))
+print(p1['TI'])  #display title
+
+Q2 = S.inlinks(p1['UT'])
+print(len(Q2), p1['TC']) #ISI's citation counts are inconsistent, hinging on which sub-database getting searched    lov
+Q2.rip("catlovers.ciw")
+```
+
+Query objects are static for the duration of a session---internally ISI doesn't
+let you do anything until it has first made a temporary SQL materialized view
+(or something equivalent) and tagged it with a qid number.
+The bonus is that there is no concern about accidentally missing records during a long running scrape due to data entry.
+
+Be very very very careful with this. It would be very easy to accidentally start
+downloading a million records and find a lawyer-happy Thomson-Reuters pie on your face.
+"""
+
+#TODO:
+# [ ] rearchitect so that passwords are passed at __init__
+# [ ] Rearchitect to use composition instead of inheritence (namely: it's awks that ISISession exposes .post() and .get()) 
+# [ ] advancedSearch()
+#   [ ] besides a manual query string, advanced search has a few extra params like "articles only": support these
 # [ ] Use logging.debug() instead of print() everywhere
-# [ ] Outlinks:
+# [x] Outlinks:
 #     Using OutboundService.do with "CITREF" in filters
 #     WOS's full_record.do has a "Citation Network" div which links to
 #     InterService.do which has the export options of the regular page;
 #     indeed, clicking this makes a new qid (hidden) number.
 #     This route gives a full ISI record for each
-# [ ] Inlinks:
+# [x] Inlinks:
 #     On a query result page, the "Times Cited" links go to
 #     CitingArticles.do which provides all the inlinks.
 #     Extract these.
+#   [ ] Handle the case where a article has zero inlinks (in which 
+# [ ] Make python2 compatible (probably with liberal use of the python-future module)
+# [ ] Make ISIQuery more fully featured; in particular, it should be a lazily-loaded sequence which you can iterate over, extracting the basics (via screen scraping)
+# [ ] .rip() is a very scripty function. It basically expects an interactive user with a pristine filesystem; it should be not so noisy!
+#       Could it be written as an iterator over the result files? And then that could be combined inline with isijoin.py, and the 
 
+# stdlib imports
 import sys, os
 #import argparse, optparse, ...
-
-import locale
-from itertools import count, cycle
-
-from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
+from warnings import warn
 import traceback
+
+from itertools import count, cycle
+from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
+
+# library imports
+# (users will need to `pip install` these)
 import requests
 from requests.exceptions import HTTPError
 from bs4 import BeautifulSoup
 
-from warnings import warn
-
+# local package imports
+from isiparse import is_WOS_number
 from util import *
 
-from isiparse import is_WOS_number
 
-
-#------------ utils
+#------------ utils (which aren't general enough to belong in util.py)
 
 def qs_parse(s):
     """
@@ -42,7 +82,6 @@ def qs_parse(s):
     """
     return dict(parse_qsl(s))
 
-#--------------- ripper
 
 class UWProxy(requests.Session):
     """
@@ -60,7 +99,6 @@ class UWProxy(requests.Session):
         last_name: your "username". Note that the UW library does *not* use your Quest ID.
         card_barcode: your "password" -- the 14 digit barcode number; not your student ID.
         """
-        
         
         try:
             self._logged_in = "logging_in" #workaround the assert in request(). I want to keep that assert for the common case, but it breaks this initial step.
@@ -128,12 +166,31 @@ class UWProxy(requests.Session):
         return super().request(verb, proxy_url, *args, **kwargs)
         
 
+class AnonymizedUAMixin(requests.Session):
+    """
+    a requests.Session that tweaks settings to try to anonymize some of our details,
+    just because there's no reason not to fly under the radar if we can.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.headers['User-Agent'] = self.random_UA()
+
+    @staticmethod
+    def random_UA():
+        """
+        
+        # TODO: a library that automatically downloads common user agents and picks one
+        """
+        return "Mozilla/5.0 (X11; Linux x86_64; rv:36.0) Gecko/20100101 Firefox/36.0"
+    
+
+
+#--------------- ripper
+
 class ISISession(requests.Session):
     """
     A requests.Session that hardcodes the magic URLs needed to access http://apps.webofknowledge.com/
     """
-    
-    # TODO: rearchitect stuff so that passwords are passed at __init__
     
     def login(self, *args, **kwargs):
         super().login(*args, **kwargs)
@@ -422,24 +479,11 @@ class ISISession(requests.Session):
         #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
         count = parse_american_int(count)
         
-        # warn if we don't have access to citation records
-        # As far as I can tell, the only way to find this out is by looking for if the output form gives the option.
-        # You can also just try downloading with citation records and looking if it actually gives them to you or not, but that's sketchier
-        # TODO: this is probably totally irrelevant now that we have outlinks(), and even before that not having this access is not critical.
-        soup = BeautifulSoup(r.content)
-        soup = BeautifulSoup(soup.find(id="qoContentTemplate").text) # the div that contains the output form is not in the HTML: it's in a script tag of type "text/template". so BeautifulSoup misses it.
-        soup = soup.find("select", id="bib_fields")
-        bib_field_options = soup("option")
-        if len(bib_field_options)!=4:
-            warn("We appear to not have access to ISI's We cannot export citation records.")
-            warn("We have %d options: %s" % (len(bib_field_options), "; ".join(e.text.strip() for e in bib_field_options),))
-        
         return ISIQuery(self, 'GeneralSearch', qid, count, estimated)
         
     def advancedSearch(self, query):
         """
         query should be a string in the form
-        #TODO: other options that advanced search allows, like "articles only"
         """
         raise NotImplementedError
     
@@ -454,20 +498,17 @@ class ISISession(requests.Session):
         Given an ISI document ID (aka WOS number aka UT field aka Accession Number),
         get an ISIQuery over all the documents it cites.
         
-        Now, you also get outlinks this in the "CR" field, but those are badly mangled
+        Now, you also get outlinks in the "CR" field, but those are badly mangled
         MLA-esque single line citations; this API actually gives you the full records.
-        We make no guarantees that these results match up to the "CR" results; that's up
-        to ISI (and their database is full of varying formats and inconsistencies). 
-        
-        Unlike generalSearch(), results are always returned alphabetical by author name.
+        However, we make no guarantees that these results match up to the "CR" results; that's up
+        to ISI (and their database is full of varying formats and inconsistencies).
+        In particular, the WOS includes citations to articles which it does not have;
+        in this case, the missing records are silently elided during ISIQuery.export().
+        If your record counts are not adding up, and especially if you are getting empty .ciw files,
+        try the search by hand and see if the results lists "Title: [not available]".
         
         If you use this across a set of related records, you are likely to get duplicates.
         You will just have to merge them by WOS number.
-        
-        The WOS includes citation records for articles which it does not have in its database.
-        In this case, the missing records are simply elided during ISIQuery.export().
-        If your record counts are not adding up, and especially if you are getting empty .ciw files,
-        try the search by hand and see if the results lists "Title: [not available]".
         
         This method does not pretend very well to be a proper browser:
          a proper browser would first search for the WOS number with WOS_GeneralSearch.do
@@ -572,24 +613,6 @@ class ISISession(requests.Session):
 
 
 
-class AnonymizedUAMixin(requests.Session):
-    """
-    a requests.Session that tweaks settings to try to anonymize some of our details,
-    just because there's no reason not to fly under the radar if we can.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.headers['User-Agent'] = self.random_UA()
-
-    @staticmethod
-    def random_UA():
-        """
-        
-        # TODO: a library that automatically downloads common user agents and picks one
-        """
-        return "Mozilla/5.0 (X11; Linux x86_64; rv:36.0) Gecko/20100101 Firefox/36.0"
-    
-
 class UWISISession(ISISession, UWProxy):
     pass
 
@@ -624,7 +647,7 @@ class ISIQuery:
     def __len__(self):
         return self._len
     
-    def export(self, start, end, format="fieldtagged"):
+    def export(self, fname, start=1, end=500, format="fieldtagged"):
         """
         Request records export via the "Save to Other File Formats" dialog.
         Export records for the current query startinf running start through end-1.
@@ -638,6 +661,15 @@ class ISIQuery:
         Returns the HTTP response from ISI's OutboundService.do,
         because I don't want to corner your choices, though this
         does mean you get more information than you expect, probably.
+        """
+        r = self._export(start, end, format)
+        print("Exporting records [%d,%d) to %s" % (start, end, fname), file=sys.stderr) #TODO: if we start multiprocessing with this, we should print the query in here to distinguish who is doing what. Though I suppose printing the filename is equally good.
+        with open(fname,"wb") as w:
+            w.write(r.content) #.content == binary => "wb"; .text would => "w"
+    
+    def _export(self, start, end, format="fieldtagged"):
+        """
+        backend for export()
         """
         assert start >= 0 and end >= 0
         assert start < end
@@ -762,11 +794,10 @@ class ISIQuery:
             if upper_limit and block > upper_limit: break
             fname = "%s_%04d%s" % (base_name, block, ext)
             try:
-                r = self.export(block, block+500)
-                print("Exporting records [%d,%d) to %s" % (block, block+500, fname), file=sys.stderr) #TODO: if we start multiprocessing with this, we should print the query in here to distinguish who is doing what. Though I suppose printing the filename is equally good.
-                with open(fname,"w") as w:
-                    w.write(r.text) #assuming ISI returns plain text to us. which it should. because we're telling it to.
-            except HTTPError:
+                r = self.export(fname, block, block+500)
+            except HTTPError as exc:
+                #print("quitting on block %d due to:" % (k,)) #DEBUG
+                #traceback.print_exc()
                 break
     
     def __str__(self):
