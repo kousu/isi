@@ -1,9 +1,15 @@
 """
 ISI flat file format parser.
 
-run test(s) with
+Empirically, the ISI flat file format is *identical* to the plain text
+EndNote format (.ciw), judging from what happens when you export from
+the Thomson-Reuters Web of Science "To EndNote Desktop" vs "To Other
+Reference Software". The only difference might be the file extension.
+
+Run test(s) by getting a .ciw file either
+manually or with isi_scrape and running
 ```
-python -m isiparse path/to/data.isi
+python -m isiparse data.ciw
 ```
 """
 

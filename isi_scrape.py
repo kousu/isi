@@ -702,7 +702,7 @@ if __name__ == '__main__':
                   "ISI Session: %s\n"
                   "Date: %s\n" %
                   (strquery, len(Q), S._SID, datetime.datetime.now()), file=desc)
-        fname = "%s.isi" % (S._SID,) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
+        fname = "%s.ciw" % (S._SID,) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
         print("Ripping results.")
         Q.rip(fname)
     except Exception as exc:
