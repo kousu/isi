@@ -14,6 +14,11 @@ If you have access to WOS, you are probably behind a university proxy; if your s
 for you will be something like http://isiknowledge.com.proxy.lib.your.school.tld/wos
 
 
+When debugging `export()` and friends, to quickly get record counts by document type, try this:
+```
+$ egrep ^PT *.ciw | sort | uniq -c
+```
+
 License
 -------
 
