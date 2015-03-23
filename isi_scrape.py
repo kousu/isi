@@ -191,9 +191,11 @@ class ISISession(requests.Session):
                       the first uses "IS" and the second "BN" to refer to ISBN, much like Harry and Draco.
                       the first doesn't list "DT" and some other fields
                       You apparently can search by anything in the fuller list, regardless.
-              - querystring is fed directly into ISI unchecked. You generally can use globbing here (*, $ ?, ...)
-                You can also (apparently) embed operator strings here.
+              - querystring is fed directly into ISI unchecked.
+                Anything you can use from the http://isiknowledge.com/wos search engine you can use here (and if things aren't working, try it via the Web UI first).
+                ~Generally~ you can use ranges ("2007-2010"), globbing (?, +, *), and boolean operators ("WOS:000348623400019 OR WOS:000348623400022") here, so long as it makes sense.
                 Reference: http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_rules.html
+                Let it be reiterated that this string is fed into ISI **UNCHECKED**, which makes it both powerful and a pain.
             - operator strings: AND, OR, NOT, NEAR, SAME; also fed into ISI unchecked.
                 Reference: http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_operators.html
             The length of fields should be an odd number because there should be exactly one less operator than query pairs.
