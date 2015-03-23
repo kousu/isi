@@ -768,6 +768,10 @@ class ISIQuery:
                     w.write(r.text) #assuming ISI returns plain text to us. which it should. because we're telling it to.
             except HTTPError:
                 break
+    
+    def __str__(self):
+        return "<%s: %d records%s>" % (type(self).__name__, len(self), " (approximately)" if self.estimated else "") #<-- this could be better
+    
 
 def tos_warning():
     print("In using this to download records from the Web of Science, you should be aware of the terms of service:")
