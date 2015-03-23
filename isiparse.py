@@ -17,13 +17,13 @@ python -m isiparse data.ciw
 # [ ] rework strpisimonth to be strpisidate, returning a tuple instead of an integer;
 #     I *thought* the PD field was only ever month and maybe day, but sometimes it duplicates the year (PY) field too
 #     Once this works, write an assertion "not ('PY' in fields and 'PD' in fields and fields['PD'].year is not None) or (fields['PY'] == fields['PD'].year)
-
+# [ ] Rename this whole thing to ciwparse? EndNoteParse (though this might get us sued :P)?
 
 def is_WOS_number(w):
     """
     check that the string w is a WOS number
     You find these in the 'UT' field in exported .isi files.
-    It is also called the "Accession Number" 
+    It is also called the "Accession Number"
     """
     try:
         header, number = w[:4], w[4:]

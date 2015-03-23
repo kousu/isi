@@ -436,7 +436,9 @@ class ISISession(requests.Session):
         get an ISIQuery over all the documents it cites.
         
         Now, you also get outlinks this in the "CR" field, but those are badly mangled
-        MLA-esque single line citations; this API actually gives you the full records. 
+        MLA-esque single line citations; this API actually gives you the full records.
+        We make no guarantees that these results match up to the "CR" results; that's up
+        to ISI (and their database is full of varying formats and inconsistencies). 
         """
         assert is_wos_number(document)
         raise NotImplementedError
@@ -581,12 +583,18 @@ class ISIQuery:
         
         fname: file name. used as a template: if fname == "fname.ext" then records will be exported to ["fname_0001.ext", "fname_0501.ext", ...] 
         upper_limit: the largest record index to export; use this to make an easy guarantee that you won't get stomped by ISI for chewing through their data.
-        # TODO:
-          make Queries record their parameters and write a __str__ which canonicallizes them into a text form, then implicitly use this as fname. Done right, this will really help provenance.
-           -> or at the very least
-           -> tricky because there are soooooooooooooooo many parameters; 
-          add random jitter between requests so we don't look so botty
         """
+        
+        # TODO:
+        # [ ] make Queries record their parameters and write a __str__ which canonicallizes them into a text form, then implicitly use this as fname. Done right, this will really help provenance.
+        #   -> or at the very least
+        #   -> tricky because there are soooooooooooooooo many parameters; 
+        # [ ] add random jitter between requests so we don't look so botty
+        
+        #note!: the web UI declines to let you export more records than available, however the API will accept such a request and just only give you which records it has available.
+        #       Here, the *last record block* is making such an illegal request: it requests 500 even if there's only one; it's currently working but it might break if ISI tightens up their game. 
+        #       We could use len(self) to determine how many to request, but len(self) is not accurate when self.estimated==True, which happens in large result sets ((on the other hand, you really, really, really should not be ripping large result sets: you'll get yourself banned and/or sued))
+               
         base_name, ext = os.path.splitext(fname)
         for k in count(): #TODO: use range() here to somehow get the upper and low bounds simultanouesly
             block = 500*k + 1 #+1 because ISI starts counting at 1, of course
