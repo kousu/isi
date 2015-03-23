@@ -2,13 +2,22 @@
 
 # TODO:
 # [ ] Use logging.debug() instead of print() everywhere
+# [ ] Outlinks:
+#     Using OutboundService.do with "CITREF" in filters
+#     WOS's full_record.do has a "Citation Network" div which links to
+#     InterService.do which has the export options of the regular page;
+#     indeed, clicking this makes a new qid (hidden) number.
+#     This route gives a full ISI record for each
+# [ ] Inlinks:
+#     On a query result page, the "Times Cited" links go to
+#     CitingArticles.do which provides all the inlinks.
+#     Extract these.
 
 import sys, os
 #import argparse, optparse, ...
 
-
 import locale
-from itertools import count, chain, cycle
+from itertools import count, cycle
 
 from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl
 import traceback
@@ -18,15 +27,10 @@ from bs4 import BeautifulSoup
 
 from warnings import warn
 
+from util import flatten
+
 
 #------------ utils
-
-def flatten(L):
-    """
-    flatten a nested list by one level
-    """
-    return list(chain.from_iterable(L))
-
 
 def qs_parse(s):
     """
@@ -426,8 +430,28 @@ class ISISession(requests.Session):
         """
         return self.generalSearch(('TS', topic))
     
+    def outlinks(self, document):
+        """
+        Given an ISI document ID (aka WOS number aka UT field aka Accession Number),
+        get an ISIQuery over all the documents it cites.
+        
+        Now, you also get outlinks this in the "CR" field, but those are badly mangled
+        MLA-esque single line citations; this API actually gives you the full records. 
+        """
+        assert is_wos_number(document)
+        raise NotImplementedError
+    
+    def inlinks(self, document):
+        """
+        Given an ISI document ID (aka WOS number aka UT field aka Accession Number),
+        get an ISIQuery over all the documents that cites it.
+        """
+        assert is_wos_number(document)
+        raise NotImplementedError
+    
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
+
 
 
 
