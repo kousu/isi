@@ -211,13 +211,19 @@ class ISIResponse(requests.Response):
             assert 'message_key' in params, "and in that case, it will give the error key in this"
             err = params['message_key']
             
-            # TODO: if we see an error, extract the text to go with it by screen scraping (but not before!)
+            # if we see an error, extract the text to go with it by screen scraping
+            # 
             msg = ""
-            #soup = BeautifulSoup(self.content)
-            #msg = soup.find("div", id="client_error_input_message") #TODO: this can occur on any(?) request to ISI: to; we should wrap all of them into exceptions; perhaps this means an extra layer of indirection: make isisession speak *only* to the ISI site and put code in post() and get() and put() that wraps screenscraped errors into Exceptions
-            #assert msg is not None, "The result page *always* includes this div, even if there's no error"
-            #msg = err.text.strip()
-            
+            soup = BeautifulSoup(self.content)
+            soup = soup.find("div", class_="errorMessage")
+            for div in soup("div"):
+                # the error might appear in any of several different sub-divs
+                # my kludgey approximation is to take the first one we see
+                # if we see any
+                if div.text.strip():
+                    msg = div.text.strip()
+                    break
+                        
             raise ISIError.ALL.get(err, ISIError)(err, msg) #look up the appropriate ISIError, falling back on ISIError itself if not known, and instantiate it
         
 
