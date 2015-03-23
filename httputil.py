@@ -83,8 +83,10 @@ class UWProxy(requests.Session):
         
         def proxyify(url):
             scheme, host, path, params, query, fragment = urlparse(url)
-            proxy_host = host + ".proxy.lib.uwaterloo.ca"
-            return urlunparse((scheme, proxy_host, path, params, query, fragment))
+            if not host.endswith(".proxy.lib.uwaterloo.ca"):  #<-- awkwardly prevent infinite proxy address growth
+                host = host + ".proxy.lib.uwaterloo.ca" #    instead, response objects returned from this Session should have all references
+                                                              #    to the proxy silently stripped, but that problem is unbounded in general.
+            return urlunparse((scheme, host, path, params, query, fragment))
         
         proxy_url = proxyify(url)
         

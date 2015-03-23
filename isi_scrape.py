@@ -33,6 +33,7 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 #TODO:
 # [ ] rearchitect so that passwords are passed at __init__
 # [ ] Rearchitect to use composition instead of inheritence (namely: it's awks that ISISession exposes .post() and .get()) 
+#     Doing this while still maintaining the proxy trickery will be a sop.
 # [ ] advancedSearch()
 #   [ ] besides a manual query string, advanced search has a few extra params like "articles only": support these
 # [ ] Use logging.debug() instead of print() everywhere
@@ -100,7 +101,7 @@ class ISISession(requests.Session):
         """
         Backend for generalSearch(); factored out since some of the other extractions *can only work by first doing a regular search*. ugh.
         
-        returns a BeautifulSoup. TODO: I might need to return the HTTP response as well. Don't need it right now, but keep it in mind.
+        returns (HTTPResponse, BeautifulSoup).
         """
         max_field_count = 25
         
@@ -263,7 +264,8 @@ class ISISession(requests.Session):
             #TODO: better exception
             raise ISIError("Search failed", err)
             
-        return soup
+        return r, soup
+        # TODO:  this is ugly; watdo? the use of this is that we can factor the common error checking in here
         
     def generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
@@ -355,7 +357,7 @@ class ISISession(requests.Session):
         
         returns an ISIQuery object. See ISIQuery for how to proceed from there.
         """
-        soup = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
+        r, soup = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
         
         qid = soup.find("input", {"name": "qid"})['value']
         #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
@@ -367,7 +369,7 @@ class ISISession(requests.Session):
         #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
         count = parse_american_int(count)
         
-        return ISIQuery(self, 'GeneralSearch', qid, count, estimated)
+        return ISIQuery(self, 'GeneralSearch', qid, r.url, count, estimated)
         
     def advancedSearch(self, query):
         """
@@ -436,8 +438,8 @@ class ISISession(requests.Session):
         form += _query()
             
         r = self.get("http://apps.webofknowledge.com/InterService.do",
-                 #headers={"Referer": "Gilgamesh",}, #TODO
-                 params=form) #the outlinks page takes query params, not form POST params; luckily python-requests makes this distinction trivial
+                     headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
+                     params=form) #the outlinks page takes query params, not form POST params; luckily python-requests makes this distinction trivial
         r.raise_for_status()
         soup = BeautifulSoup(r.content)
         
@@ -445,7 +447,7 @@ class ISISession(requests.Session):
         count = soup.find(id="hitCount.top").text  #<--unlike the other searches
         count = parse_american_int(count)
         
-        return ISIQuery(self, 'CitedRefList', qid, count, False)
+        return ISIQuery(self, 'CitedRefList', qid, r.url, count, False)
     
     def inlinks(self, document):
         """
@@ -456,7 +458,7 @@ class ISISession(requests.Session):
         
         # there is no way to go for the jugular with this one
         # so, first we do once search, then extract the magic link, then hit that
-        soup = self._generalSearch(("UT", document))
+        r, soup = self._generalSearch(("UT", document))
         
         records = soup(class_="search-results-item")
         assert len(records) == 1, "Since we searched by WOS number, we should only have one result"
@@ -471,11 +473,10 @@ class ISISession(requests.Session):
         assert link['href'].startswith("/CitingArticles.do"), "The link should be to the inlinks page: CitingArticles.do"
         link = link['href']
         
-        # TODO: this use base = r.url from the _generalSearch() call
-        base = "http://apps.webofknowledge.com/"
+        base = r.url
         link = urljoin(base, link) #resolve the relative link
         
-        r = self.get(link) #we don't need to deal with params cruft
+        r = self.get(link, headers={'Referer': r.url}) #we don't need to deal with params cruft
         # appppparently hitting this with GET creates a new qid on the backend
         r.raise_for_status()
         soup = BeautifulSoup(r.content)
@@ -492,7 +493,7 @@ class ISISession(requests.Session):
         #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
         count = parse_american_int(count)
         
-        return ISIQuery(self, 'CitingArticles', qid, count, False)
+        return ISIQuery(self, 'CitingArticles', qid, r.url, count, False)
     
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
@@ -515,22 +516,29 @@ class ISIQuery:
     
     This class is a brittle nougat shell around a creamy WoS result set.
     """
-    def __init__(self, session, search_mode, qid, N=None, estimated=None):
+    def __init__(self, session, search_mode, qid, referer, N=None, estimated=None):
         """
-        N is the number of results in the query set, if known.
-        search_mode: 'GeneralSearch', 'AdvancedSearch', 'CitedRefList' or 'CitingArticles'
-            This is needed to properly tweak the behaviour of the request
-            to match the type of search on the server in qid. Incorrect,
-            instead of an error, ISI will simply export an empty UTF-8 file
-             (it will have exactly two bytes: the Unicode BOM)
-             TODO: perhaps this is a good place to use an inheritence tree instead of an embedded if-else tree?
+        
+        Args:
+            search_mode: 'GeneralSearch', 'AdvancedSearch', 'CitedRefList' or 'CitingArticles'
+                This is needed to properly tweak the behaviour of the request
+                to match the type of search on the server in qid. Incorrect,
+                instead of an error, ISI will simply export an empty UTF-8 file
+                 (it will have exactly two bytes: the Unicode BOM)
+                 TODO: perhaps this is a good place to use an inheritence tree instead of an embedded if-else tree?
+            qid: the id (generally a small integer) of the resultset this instance is wrapping.
+                (search_mode, qid) need to be consistent together, or else operations will fail in mysterious ways.
+            referer: the URL of the page; this is used both for some operations and for making the HTTP headers look less suspicious.
+            N is the number of results in the query set, if known.
+            estimated: whether 'N' is an approximation or not
         """
         self._session = session
         self.SID = session._SID
+        self._search_mode = search_mode
         self.qid = qid
+        self._referer = referer
         self._len = N
         self.estimated = estimated
-        self.search_mode = search_mode
     
     def __len__(self):
         return self._len
@@ -587,7 +595,7 @@ class ISIQuery:
                             
                             # now this part is important
                             'SID': self._session._SID,
-                            'search_mode': self.search_mode,
+                            'search_mode': self._search_mode,
                             'qid': self.qid,
                             
                             'mode': 'OpenOutputService', # I bet WOS is programmed in Java.
@@ -614,14 +622,14 @@ class ISIQuery:
         
         # append mode-specific cruft
         # (some of these are actually updates, overwriting the defaults extracted from GeneralSearch
-        if self.search_mode == 'GeneralSearch':
+        if self._search_mode == 'GeneralSearch':
             # generalSearch()
             #params.update({})
             pass #defaults above were extracted from GeneralSearch mode
-        elif self.search_mode == 'AdvancedSearch':
+        elif self._search_mode == 'AdvancedSearch':
             # advancedSearch()
             raise NotImplementedError
-        elif self.search_mode == 'CitedRefList':
+        elif self._search_mode == 'CitedRefList':
             # outlinks()
             params.update({'view_name': 'WOS-CitedRefList-summary',
                            
@@ -634,19 +642,19 @@ class ISIQuery:
                            'filters': 'AUTHORSIDENTIFIERS ISSN_ISBN ABSTRACT SOURCE TITLE AUTHORS  ',
                             
                            })
-        elif self.search_mode == 'CitingArticles':
+        elif self._search_mode == 'CitingArticles':
             # inlinks()
             params.update({'view_name': 'WOS-CitingArticles-summary',
                             
                             # apparently mode can be left at default here?
                             })
         else:
-            raise ValueError("Unknown search_mode '%s'" % (self.search_mode,)) #XXX check this in __init__ instead?
+            raise ValueError("Unknown search_mode '%s'" % (self._search_mode,)) #XXX check this in __init__ instead?
         
         assert len(params) == 27, "Expected number of params, extracted by hand-counting in Firefox's web inspector"
         # fire!
         r = self._session.post("http://apps.webofknowledge.com/OutboundService.do?action=go",
-                           #headers={...},
+                           headers={'Referer': self._referer},
                            data=params)
         
         r.raise_for_status()
