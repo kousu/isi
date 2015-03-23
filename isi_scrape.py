@@ -82,7 +82,7 @@ class UWProxy(requests.Session):
                       "user": card_barcode})
             
             r.raise_for_status() #dirty way to make sure we have 200 OK
-            SID = S.cookies["ezproxy"] #make sure that the login process appears to have given us the magic ticket
+            SID = self.cookies["ezproxy"] #make sure that the login process appears to have given us the magic ticket
             
             print("Started new UW Library Proxy session '%s'" % (SID,), file=sys.stderr)
             #import IPython; IPython.embed() #DEBUG
