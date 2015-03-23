@@ -19,7 +19,7 @@ import sys, os
 import locale
 from itertools import count, cycle
 
-from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl
+from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
 import traceback
 import requests
 from requests.exceptions import HTTPError
@@ -150,6 +150,176 @@ class ISISession(requests.Session):
     def request(self, *args, **kwargs):
         return super().request(*args, **kwargs)
     
+    
+    def _generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
+        """
+        Backend for generalSearch(); factored out since some of the other extractions *can only work by first doing a regular search*. ugh.
+        
+        returns a BeautifulSoup. TODO: I might need to return the HTTP response as well. Don't need it right now, but keep it in mind.
+        """
+        max_field_count = 25
+        
+        # There are a lot of things that get posted to this form, even though it's just the simple search.
+        # most of these were copied raw from a working query
+        # most of them are ridiculously unusable and redundant and possibly ignored on the backend
+        # but WHEN IN ROME...
+        # 
+        # For readability, I split up the construction of the POST data into a sections, with a generator for each.
+        # They are underscored to avoid conflicts with the input arguments.
+        
+        def _session():
+            """ 
+            This is header stuff needed to convince the search engine to listen to us
+            """
+            yield 'product', 'WOS' # 'UA' == "all databases", "..." == korean thing, "..." = MedLine, ...; we want WOS because WOS can give us bibliographies, not just 
+            yield 'action', 'search' 
+            yield 'search_mode', 'GeneralSearch'
+            yield 'SID', self._SID
+        
+        def _cruft():
+            """
+            this is crap ISI probably ignores
+            TODO: try commenting this out and seeing if anything breaks. (requires a working test suite, which is annoying because the only server to test against is the real one)
+            """
+            # (the browser is sending hardcoded error messages as options in its *query*??)
+            yield 'input_invalid_notice', 'Search Error: Please enter a search term.'
+            yield 'exp_notice', 'Search Error: Patent search term could be found in more than one family (unique patent number required for Expand option) '
+            yield 'max_field_notice', 'Notice: You cannot add another field.'
+            yield 'input_invalid_notice_limits', ' <br/>Note: Fields displayed in scrolling boxes must be combined with at least one other search field.'
+            # LOL what are these for?? "Yes, I Love Descartes Too"
+            yield 'x', '0',
+            yield 'y', '0',
+            # whyyyyyy
+            yield 'ss_query_language', 'auto'
+            yield 'ss_showsuggestions', 'ON'
+            yield 'ss_numDefaultGeneralSearchFields', '1'
+            yield 'ss_lemmatization', 'On'
+            yield 'limitStatus', 'collapsed'
+            yield 'update_back2search_link_param', 'yes'
+            #'sa_params': "UA||4ATCGy9dQvV3rtykDa3|http://apps.webofknowledge.com.proxy.lib.uwaterloo.ca|'", #<-- TODO: this seems to repeat things passed elsewhere: product, SID, and URL. The first two I can get, but the URL is tricky because I've abstracted out from coding against the UW proxy directly
+                # but I suspect the system won't notice if it's missing...
+            yield 'ss_spellchecking', 'Suggest'
+            yield 'ssStatus', 'display:none'
+            yield 'formUpdated', 'true'
+        
+        # This is the actual fields
+        # This part is rather complicated. This ISI's fault.
+        def _fields():
+            """
+            this generator walks the input and reformats it into key-value pairs 
+            returns the number of fields searched (which you need to retrieve from the StopIteration)
+            Note: the number of times this yields is larger than the number of fields actually represented, because of ISI cruft, so you can't simply len() the result.
+            """
+            for i in range(0, len(fields), 2):
+                t = (i//2)+1 #terms correspond to every other index, and are themselves indexed from 1
+                
+                # the field term
+                # TODO: wrap this in a better typecheck, because the user has to pass a complicated
+                # datastructure down and, if wrong, will get a crash in this pretty obscure place
+                (field, querystring) = fields[i]
+                
+                if isinstance(querystring, list): #TODO: be more geneerric
+                    # attempt to coerce lists to the format used by GeneralSearch.do for OR'd enumerations
+                    # This is to ###-separarate the points
+                    # as far as I know, this is *only* used for but we'll leave that up to the user
+                    querystring = str.join("###", querystring)
+                
+                yield "value(select%d)" % t, field
+                yield "value(input%d)" % t, querystring 
+                yield "value(hidInput%d)" % t, "" #the fantastic spaztastic no-op hidden input field
+                
+                # the operand term
+                if fields[i+1:]:
+                    op = fields[i+1]
+                    assert op in ["AND","OR","NOT","SAME","NEAR"], "ISI only knows these operators"
+                    yield "value(bool_%d_%d)" % (t,t+1), op
+                else:
+                    # last field; don't include the operand term
+                    assert len(fields)-1 == i, "Double checking I got the if right"
+            
+            if t > max_field_count:
+                warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
+            yield 'fieldCount', t  #the number of fields processed
+            yield 'max_field_count', max_field_count #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
+        
+        def _period():
+            """    
+             the period is actually several sub-fields together; as in fields2isi we re-interpret the python arguments into ISI's crufty form
+            """
+            #default values, as on the HTML form
+            period = "Range Selection" # this decides whether we're using the range drop down or the year dropdowns
+            range = "ALL"  #this is the value of the range dropdown
+            startYear, endYear = 1900, 2000 #this is the value of the year dropdowns
+            # obviously, only one of the latter two actually matters, but we POST both because we want to be as close to a browser as possible to avoid mishaps.
+            
+            if timespan is not None:
+                try:
+                    # (startYear, endYear)
+                    startYear, endYear = timespan
+                    period = "Year Range"
+                except:
+                    if isinstance(timespan, int):
+                        # (year,)
+                        startYear, endYear = timespan, timespan
+                        period = "Year Range"
+                    else:
+                        # special-case ISI timespan
+                        assert timespan in ["ALL","Latest5Years","YearToDate","4week","2week","1week"], "ISI only knows these timespans, besides year ranges."
+                        range = timespan
+                
+            yield ("period", period)
+            yield ("startYear", startYear)
+            yield ("endYear", endYear)
+            yield ("range", range)
+        
+        def _sort_order():
+            yield 'rs_sort_by', sort
+        
+        def _editions():
+            for e in editions:
+                yield ("editions", e)
+        
+        # merge all the sections
+        # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
+        # += on a list L and a generator G is the same as .extend(); note that L + G will *not* work.
+        form = []
+        form += _session()
+        form += _cruft()
+        form += _fields()
+        form += _sort_order()
+        form += _editions()
+        
+        #print(form) #DEBUG
+        #import IPython; IPython.embed() #DEBUG
+        
+        # Do the query
+        # this causes ISI to create and cache a resultset
+        r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
+                headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
+                data=form)
+        r.raise_for_status()
+        
+        soup = BeautifulSoup(r.content)
+        
+        # DEBUG
+        # being able to see what ISI gives back helps, especially since ISI seems to return 200 OK for *everything*
+        #with open("generalSearch()_result.html","w") as what:
+        #    what.write(soup.prettify())
+        
+        #print("performed a query; dropping to shell; query result is in r and soup")
+        #import IPython; IPython.embed()
+        
+        # TODO: search for error message in output, translate it to an exception        
+        
+        err = soup.find("div", id="client_error_input_message") #TODO: this can occur on any(?) request to ISI: to; we should wrap all of them into exceptions; perhaps this means an extra layer of indirection: make isisession speak *only* to the ISI site and put code in post() and get() and put() that wraps screenscraped errors into Exceptions
+        assert err is not None, "The result page *always* includes this div, even if there's no error"
+        err = err.text.strip()
+        if err:
+            #TODO: better exception
+            raise Exception("Search failed", err)
+            
+        return soup
+        
     def generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
         """
         Perform a search of the http://apps.webofknowledge.com/WOS_GeneralSearch_input.do form.
@@ -240,165 +410,7 @@ class ISISession(requests.Session):
         
         returns an ISIQuery object. See ISIQuery for how to proceed from there.
         """
-        
-        max_field_count = 25
-        
-        # There are a lot of things that get posted to this form, even though it's just the simple search.
-        # most of these were copied raw from a working query
-        # most of them are ridiculously unusable and redundant and possibly ignored on the backend
-        # but WHEN IN ROME...
-        # 
-        # For readability, I split up the construction of the POST data into a sections, with a generator for each.
-        # They are underscored to avoid conflicts with the input arguments.
-        
-        def _session():
-            """ 
-            This is header stuff needed to convince the search engine to listen to us
-            """
-            yield 'product', 'WOS' # 'UA' == "all databases", "..." == korean thing, "..." = MedLine, ...; we want WOS because WOS can give us bibliographies, not just 
-            yield 'action', 'search' 
-            yield 'search_mode', 'GeneralSearch'
-            yield 'SID', self._SID
-        
-        def _cruft():
-            """
-            this is crap ISI probably ignores
-            TODO: try commenting this out and seeing if anything breaks. (requires a working test suite, which is annoying because the only server to test against is the real one)
-            """
-            # (the browser is sending hardcoded error messages as options in its *query*??)
-            yield 'input_invalid_notice', 'Search Error: Please enter a search term.'
-            yield 'exp_notice', 'Search Error: Patent search term could be found in more than one family (unique patent number required for Expand option) '
-            yield 'max_field_notice', 'Notice: You cannot add another field.'
-            yield 'input_invalid_notice_limits', ' <br/>Note: Fields displayed in scrolling boxes must be combined with at least one other search field.'
-            # LOL what are these for?? "Yes, I Love Descartes Too"
-            yield 'x', '0',
-            yield 'y', '0',
-            # whyyyyyy
-            yield 'ss_query_language', 'auto'
-            yield 'ss_showsuggestions', 'ON'
-            yield 'ss_numDefaultGeneralSearchFields', '1'
-            yield 'ss_lemmatization', 'On'
-            yield 'limitStatus', 'collapsed'
-            yield 'update_back2search_link_param', 'yes'
-            #'sa_params': "UA||4ATCGy9dQvV3rtykDa3|http://apps.webofknowledge.com.proxy.lib.uwaterloo.ca|'", #<-- TODO: this seems to repeat things passed elsewhere: product, SID, and URL. The first two I can get, but the URL is tricky because I've abstracted out from coding against the UW proxy directly
-                # but I suspect the system won't notice if it's missing...
-            yield 'ss_spellchecking', 'Suggest'
-            yield 'ssStatus', 'display:none'
-            yield 'formUpdated', 'true'
-        
-        # This is the actual fields
-        # This part is rather complicated. This ISI's fault.
-        def _fields():
-            """
-            this generator walks the input and reformats it into key-value pairs 
-            returns the number of fields searched (which you need to retrieve from the StopIteration)
-            Note: the number of times this yields is larger than the number of fields actually represented, because of ISI cruft, so you can't simply len() the result.
-            """
-            for i in range(0, len(fields), 2):
-                t = (i//2)+1 #terms correspond to every other index, and are themselves indexed from 1
-                
-                # the field term
-                (field, querystring) = fields[i]
-                
-                if isinstance(querystring, list): #TODO: be more geneerric
-                    # attempt to coerce lists to the format used by GeneralSearch.do for OR'd enumerations
-                    # This is to ###-separarate the points
-                    # as far as I know, this is *only* used for but we'll leave that up to the user
-                    querystring = str.join("###", querystring)
-                
-                yield "value(select%d)" % t, field
-                yield "value(input%d)" % t, querystring 
-                yield "value(hidInput%d)" % t, "" #the fantastic spaztastic no-op hidden input field
-                
-                # the operand term
-                if fields[i+1:]:
-                    op = fields[i+1]
-                    assert op in ["AND","OR","NOT","SAME","NEAR"], "ISI only knows these operators"
-                    yield "value(bool_%d_%d)" % (t,t+1), op
-                else:
-                    # last field; don't include the operand term
-                    assert len(fields)-1 == i, "Double checking I got the if right"
-            
-            if t > max_field_count:
-                warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
-            yield 'fieldCount', t  #the number of fields processed
-            yield 'max_field_count', max_field_count #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
-        
-        def _period():
-            """    
-             the period is actually several sub-fields together; as in fields2isi we re-interpret the python arguments into ISI's crufty form
-            """
-            #default values, as on the HTML form
-            period = "Range Selection" # this decides whether we're using the range drop down or the year dropdowns
-            range = "ALL"  #this is the value of the range dropdown
-            startYear, endYear = 1900, 2000 #this is the value of the year dropdowns
-            # obviously, only one of the latter two actually matters, but we POST both because we want to be as close to a browser as possible to avoid mishaps.
-            
-            if timespan is not None:
-                try:
-                    # (startYear, endYear)
-                    startYear, endYear = timespan
-                    period = "Year Range"
-                except:
-                    if isinstance(timespan, int):
-                        # (year,)
-                        startYear, endYear = timespan, timespan
-                        period = "Year Range"
-                    else:
-                        # special-case ISI timespan
-                        assert timespan in ["ALL","Latest5Years","YearToDate","4week","2week","1week"], "ISI only knows these timespans, besides year ranges."
-                        range = timespan
-                
-            yield ("period", period)
-            yield ("startYear", startYear)
-            yield ("endYear", endYear)
-            yield ("range", range)
-        
-        def _sort_order():
-            yield 'rs_sort_by', sort
-        
-        def _editions():
-            for e in editions:
-                yield ("editions", e)
-        
-        # merge all the sections
-        # note: we have to use lists of key-value pairs and not dicts because ISI repeats some parameter names
-        # += on a list L and a generator G is the same as .extend(); note that L + G will *not* work.
-        form = []
-        form += _session()
-        form += _cruft()
-        form += _fields()
-        form += _sort_order()
-        form += _editions()
-        
-        #print(form) #DEBUG
-        #import IPython; IPython.embed() #DEBUG
-        
-        # Do the query
-        # this causes ISI to create and cache a resultset
-        r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
-                headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
-                data=form)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.content)
-        
-        # DEBUG
-        # being able to see what ISI gives back helps, especially since ISI seems to return 200 OK for *everything*
-        #with open("generalSearch()_result.html","w") as what:
-        #    what.write(soup.prettify())
-        
-        #print("performed a query; dropping to shell; query result is in r and soup")
-        #import IPython; IPython.embed()
-        
-        # TODO: search for error message in output, translate it to an exception        
-        
-        err = soup.find("div", id="client_error_input_message") #TODO: this can occur on any(?) request to ISI: to; we should wrap all of them into exceptions; perhaps this means an extra layer of indirection: make isisession speak *only* to the ISI site and put code in post() and get() and put() that wraps screenscraped errors into Exceptions
-        assert err is not None, "The result page *always* includes this div, even if there's no error"
-        err = err.text.strip()
-        if err:
-            #TODO: better exception
-            raise Exception("Search failed", err)
-        
+        soup = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
         
         qid = soup.find("input", {"name": "qid"})['value']
         #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
@@ -501,7 +513,7 @@ class ISISession(requests.Session):
         soup = BeautifulSoup(r.content)
         
         qid = soup.find("input", {"name": "qid"})['value']
-        count = soup.find(id="hitCount.top").text
+        count = soup.find(id="hitCount.top").text  #<--unlike the other searches
         count = parse_american_int(count)
         
         return ISIQuery(self, 'CitedRefList', qid, count, False)
@@ -512,7 +524,46 @@ class ISISession(requests.Session):
         get an ISIQuery over all the documents that cites it.
         """
         assert is_WOS_number(document)
-        raise NotImplementedError
+        
+        # there is no way to go for the jugular with this one
+        # so, first we do once search, then extract the magic link, then hit that
+        soup = self._generalSearch(("UT", document))
+        
+        records = soup(class_="search-results-item")
+        assert len(records) == 1, "Since we searched by WOS number, we should only have one result"
+        soup = records[0]
+        
+        cites = soup.find(class_="search-results-data-cite")
+        
+        link = cites("a")
+        assert len(link) == 1, "Ditto"
+        link = link[0]
+        
+        assert link['href'].startswith("/CitingArticles.do"), "The link should be to the inlinks page: CitingArticles.do"
+        link = link['href']
+        
+        # TODO: this use base = r.url from the _generalSearch() call
+        base = "http://apps.webofknowledge.com/"
+        link = urljoin(base, link) #resolve the relative link
+        
+        r = self.get(link) #we don't need to deal with params cruft
+        # appppparently hitting this with GET creates a new qid on the backend
+        r.raise_for_status()
+        soup = BeautifulSoup(r.content)
+        
+        #XXX COPYPASTED FROM ABOVE
+        #TODO FACTOR FACTOR FACTOR
+        qid = soup.find("input", {"name": "qid"})['value']
+        #count = soup.find(id="hitCount.top").text #this is no good because the count (and most of the rest of the page) are actually loaded *by awful javascript*
+        #count = 10*int(soup.find(id="pageCount.top").text) #here's another idea
+        count = soup.find(id="footer_formatted_count").text
+        estimated = "approximately" in count.lower()
+        count = count.split()[-1] #chomp the 'approximately', if it exists
+        #locale.setlocale( locale.LC_ALL, 'en_US.UTF-8' )
+        #count = locale.atoi(count) #this should but doesn't work because it assumes *my* locale
+        count = parse_american_int(count)
+        
+        return ISIQuery(self, 'CitingArticles', qid, count, False)
     
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
@@ -556,7 +607,7 @@ class ISIQuery:
     def __init__(self, session, search_mode, qid, N=None, estimated=None):
         """
         N is the number of results in the query set, if known.
-        search_mode: 'GeneralSearch', 'AdvancedSearch', or 'CitedRefList'
+        search_mode: 'GeneralSearch', 'AdvancedSearch', 'CitedRefList' or 'CitingArticles'
             This is needed to properly tweak the behaviour of the request
             to match the type of search on the server in qid. Incorrect,
             instead of an error, ISI will simply export an empty UTF-8 file
@@ -644,12 +695,17 @@ class ISIQuery:
         # append mode-specific cruft
         # (some of these are actually updates, overwriting the defaults extracted from GeneralSearch
         if self.search_mode == 'GeneralSearch':
+            # generalSearch()
             #params.update({})
             pass #defaults above were extracted from GeneralSearch mode
         elif self.search_mode == 'AdvancedSearch':
+            # advancedSearch()
             raise NotImplementedError
         elif self.search_mode == 'CitedRefList':
-            params.update({'mode': 'CitedRefList-OpenOutputService',
+            # outlinks()
+            params.update({'view_name': 'WOS-CitedRefList-summary',
+                           
+                           'mode': 'CitedRefList-OpenOutputService', #without this, the output is empty (but *not* an error, ugh)
                            'mark_id': 'UDB', #???? this seems to be ignored, but is set differently in CitedRefList mode
                            
                            # *undo* the DOWNLOAD ALL THE THINGS option
@@ -658,6 +714,12 @@ class ISIQuery:
                            'filters': 'AUTHORSIDENTIFIERS ISSN_ISBN ABSTRACT SOURCE TITLE AUTHORS  ',
                             
                            })
+        elif self.search_mode == 'CitingArticles':
+            # inlinks()
+            params.update({'view_name': 'WOS-CitingArticles-summary',
+                            
+                            # apparently mode can be left at default here?
+                            })
         else:
             raise ValueError("Unknown search_mode '%s'" % (self.search_mode,)) #XXX check this in __init__ instead?
         
