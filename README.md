@@ -64,6 +64,12 @@ HERE=$(dirname $0)
 $HERE/isi_scrape.py -q <username> <password> "$@"
 ```
 
+ISI Verify
+----------
+
+Verifies the integrity of a scraped corpus.
+
+TODO (not written yet)
 
 ISI Join
 -------
