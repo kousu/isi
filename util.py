@@ -17,13 +17,40 @@ def list_ret(g):
         except StopIteration as stop:
             return L, stop.value
 
-            
+from itertools import islice
+def window(g, n):
+    """
+    moving window generator
+    example:
+     given a sequence g = [1,2,3,4,...] and windowsize n=2, return the sequence [(1,2), (2,3), (3,4), ...]
+    """
+    g = iter(g)
+    W = []
+    W.extend(islice(g, n-1))
+    for e in g:
+        W.append(e)
+        yield tuple(W)
+        W.pop(0)
+
+def pairs(g):
+    return window(g,2)            
+
 def chomp(s):
 	"remove trailing newline"
 	"assumes universal newlines mode "
 	if s.endswith("\n"): s = s[:-1]
 	return s
-	
+
+
+
+import os
+from shutil import rmtree
+def rm(path):
+    "rm -r"
+    if os.path.isdir(path):
+        rmtree(path)
+    else:
+        os.unlink(path)
 	
 def flatten(L):
     """

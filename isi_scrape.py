@@ -31,6 +31,7 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 """
 
 #TODO:
+# [ ] Write a setup.py that installs.
 # [ ] Obvious refactoring: roll all the extract_() calls into ISIQuery.__init__()
 # [ ] rearchitect so that passwords are passed at __init__
 # [ ] Rearchitect to use composition instead of inheritence (namely: it's awks that ISISession exposes .post() and .get()) 
@@ -66,7 +67,8 @@ from warnings import warn
 import traceback
 
 from itertools import count, cycle
-import copy
+from glob import glob #for rip()
+from copy import copy    #for abusively making wrappers
 from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
 
 # library imports
@@ -180,7 +182,7 @@ class ISIResponse(requests.Response):
         #
         # I hope this doesn't bite us down the line
         assert isinstance(response, cls.__mro__[1]), "Make sure the argument is in the expected inheritence tree"
-        response = copy.copy(response)
+        response = copy(response)
         response.__class__ = cls
         
         # DEBUG
@@ -201,7 +203,7 @@ class ISIResponse(requests.Response):
         """
         # first call up, because a 404 will prevent us doing all the rest of the checks
         #super().raise_for_status()
-        requests.Response.raise_for_status(self)  #<-- copy.copy() breaks super(); for now, hardcode the parent class. TODO: figure out what magic bit needs twiddling.
+        requests.Response.raise_for_status(self)  #<-- copy() breaks super(); for now, hardcode the parent class. TODO: figure out what magic bit needs twiddling.
         
         # TODO: look at message_key=errors.search.noRecordsFound&error_display_redirect=true instead
         # client_error_input_message is not always where the error is writting; there's also noHitsMessage and newErrorHead
@@ -804,7 +806,6 @@ class ISIQuery:
         r.raise_for_status()
         
         # TODO: logging.debug()
-        print("Exporting records [%d,%d) to %s" % (start, end, fname), file=sys.stderr) #TODO: if we start multiprocessing with this, we should print the query in here to distinguish who is doing what. Though I suppose printing the filename is equally good.
         with open(fname,"wb") as w:
             w.write(r.content) #.content == binary => "wb"; .text would => "w"
     
@@ -894,7 +895,7 @@ class ISIQuery:
         return Q
         
     
-    def rip(self, fname, upper_limit=20000):
+    def rip(self, overwrite=False, upper_limit=20000):
         """
         Export all records available in this query.
         
@@ -905,21 +906,30 @@ class ISIQuery:
         #note!: the web UI declines to let you export more records than available, however the API will accept such a request and just only give you which records it has available.
         #       Here, the *last record block* is making such an illegal request: it requests 500 even if there's only one; it's currently working but it might break if ISI tightens up their game. 
         #       We could use len(self) to determine how many to request, but len(self) is not accurate when self.estimated==True, which happens in large result sets ((on the other hand, you really, really, really should not be ripping large result sets: you'll get yourself banned and/or sued))
-               
-        base_name, ext = os.path.splitext(fname)
-        for k in count(): #TODO: use range() here to somehow get the upper and low bounds simultanouesly
-            block = 500*k + 1 #+1 because ISI starts counting at 1, of course
-            if upper_limit and block > upper_limit: break
-            fname = "%s_%04d%s" % (base_name, block, ext)
+        
+        for L, U in pairs(range(1, min(len(self), upper_limit), 500)):  #+1 because ISI starts counting at 1, of course
+            fname = "%04d-%04d.ciw" % (L,U-1) #XXX the '4' is a hardcode: most cases will have a few thousand; the -1 is to make the range inclusive, which is less confusing in labelling
+            if not overwrite and os.path.exists(fname):
+                # skip results we already have
+                # notice: this is done at the block level.
+                #         so weird things can happen, especially if the DB has changed between rips
+                #  A better method would key on individual records, but that means (i think) having results indexed by WOS number or something, which means stuffing them into SQL or making a giant folder with one file per record, which we *could* do but is more than I want to both with at the moment. And more importantly, there's no way to guess from WOS number , so we'd have to use the integer location of the record *within this resultset* which is a hard. so no.
+                assert os.path.isfile(fname)
+                continue
             try:
-                r = self.export(fname, block, block+500)
+                print("Exporting records [%d,%d) to %s" % (L,U, fname)) #TODO: if we start multiprocessing it would be useful to see the search query (which ironically isn't stored in ISIQuery)
+                r = self.export(fname+".part", L, U)
+                os.renames(fname+".part", fname) #by using a .part file we can tolerate partial rips (for simplicity, individual blocks are redownloaded in their entirety)
             except InvalidInput as exc:
-                # break when we run off the end of the valid inputs
-                # this is just a littttle bit flakey
-                #print("quitting on block %d due to:" % (k,)) #DEBUG
-                #print(exc, file=sys.stderr) #DEBUG
-                #traceback.print_exc() #DEBUG
-                break
+                if self.estimated:
+                    # break if we run off the end of the query because our count was wrong
+                    traceback.print_exc() #DEBUG
+                    print("Quitting on block [%d,%d), instead of reaching expected count d" % (L,U,len(self))) #DEBUG
+                    break
+                else:
+                    # all other ISI errors, or anything else, are thrown up the stack
+                    raise
+        assert not glob("*.part"), "successful rip() should leave no partial downloads"
     
     def __str__(self):
         return "<%s: %d records%s>" % (type(self).__name__, len(self), " (approximately)" if self.estimated else "") #<-- this could be better
@@ -952,6 +962,7 @@ if __name__ == '__main__':
     ap.add_argument('user', type=str, help="Your last name, as you use to log in to the UW library proxy")
     ap.add_argument('barcode', type=str, help="Your 14 digit library card barcode number (not your student ID!)")
     ap.add_argument('query', type=str, nargs="+", help="A query in the form FD=filter where FD is the field and filter is what to search for in that field.")
+    ap.add_argument('-o', '--overwrite', action="store_true", help="Overwrite previous scrapes")
     ap.add_argument('-q', '--quiet', action="store_true", help="Silence most output")
     ap.add_argument('-d', '--debug', action="store_true", help="Enable debugging")
     ap.epilog = """
@@ -997,39 +1008,85 @@ if __name__ == '__main__':
         
         query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
         query = query[:-1] #chomp the straggling incorrect, "AND"
+
+        # make a new folder for the results, labelled by the query used to generate them
+        strquery = str.join(" ", (args.query))
+        results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
+        
+        if os.path.exists(results): #XXX should this be checked before or after partial? what do you want to happen if *both* exist?
+            print("%s already exists" % (results,))
+            if not args.overwrite:
+                raise SystemExit(1)
+        
+        # we don't download directly to the results folder; instead, we use a .part (like firefox/chrome/etc) so that downloads can be resumed
+        partial_results = results+".part"
+        try:
+            # resume a partial download
+            with open(os.path.join(partial_results, "parameters.txt")) as params:
+                params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
+                assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
+                assert 'Records' in params
+                params['Records'] = int(params['Records'])
+            print("Resuming %s" % (partial_results,))
+        except OSError:
+            # new download! (or overwriting an old one) ((we don't actually do the overwrite until the partial download finishes, below))
+            params = None
+            if not os.path.isdir(partial_results):
+                os.mkdir(partial_results)
+        
+        # ---- inside of the subdirectory ----
+        _curdir, _ = os.getcwd(), os.chdir(partial_results)        
         
         S = AnonymizedUWISISession()
         S.login(args.user, args.barcode)
         
-        print("Logged into ISI as UW:%s." % (args.user,))
-        
+        print("Logged into ISI as UW:%s." % (args.user,))        
         print("Querying ISI for %s" % (query,)) #TODO: pretty-print
         Q = S.generalSearch(*query)
-        print("Got %s%d results" % ("an estimated " if Q.estimated else "", len(Q)))
         
-        # make a new folder for the results, labelled by the query used to generate them
-        strquery = str.join(" ", (args.query))
-        results_folder = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
-        if not os.path.isdir(results_folder):
-            print("Making results folder", results_folder)
-            os.mkdir(results_folder)
-        os.chdir(results_folder)
+        
+        if params is not None: 
+            #on resuming a partial download
+            if Q.estimated:
+                raise NotImplementedError("We do not yet support resuming queries with an estimated number of results")
+            if len(Q) < params['Records']:
+                raise Exception("New query has less results (%d) than the one being resumed (%d). This is probably a giant bug!" % (len(Q), params['records']))
+            elif len(Q) > params['Records']:
+                Y = input("New query has more results (%d) than the one being resumed (%d). "
+                          "So long as both queries were sorted chronologically this should be safe. "
+                          "Continue? [Y/n] " % (len(Q), params['Records'])).upper()
+                if not Y: Y = "Y" #<-- default to 'yes' 
+                if Y != "Y":      #<-- but whitelisting: invalid input is the same as 'no'
+                    raise SystemExit(0)
+        
         # record the parameters used for replicability
-        # this could be dne better
-        if os.path.exists("parameters.txt"): #ughhhhhh, this is awkward. TODO: handle this case better.
-            warn("Overwriting old parameters.txt")
+        # this could be done better.. pickle? shelve? 
         with open("parameters.txt","w") as desc:
             print("ISI scrape\n"
                   "==========\n"
                   "\n"
                   "Query: %s\n"
                   "Records: %d\n"
-                  "ISI Session: %s\n"
-                  "Date: %s\n" %
-                  (strquery, len(Q), S._SID, datetime.datetime.now()), file=desc)
-        fname = "%s.ciw" % (S._SID,) #name according to the SID; this should be redundant since we're also making a new folder *but* it will help if files get mixed together.
-        print("Ripping results.")
-        Q.rip(fname)
+                  "Date: %s\n" %      
+                  (strquery, len(Q), datetime.datetime.now()), file=desc)
+        print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
+        Q.rip(overwrite=False) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion
+        
+        print("Finished ripping.")
+        
+        os.chdir(_curdir)
+        # ---- out of the subdirectory ----
+        
+        if os.path.exists(results): #XXX should this be checked before or after partial? what do you want to happen if *both* exist?
+            if args.overwrite:
+                print("Overwriting %s" % (results,))
+                rm(results)
+            else:
+                # it shouldn't be possible to get here, because if os.exists(results) without -o
+                # (unless the user creates the results folder while we were ripping for some reason, but crashing is probably a fair response to that)
+                assert False, "NOTREACHED"
+        os.renames(partial_results, results)
+    
     except Exception as exc:
         if args.debug:
             print("------ EXCEPTION ------")
@@ -1042,5 +1099,5 @@ if __name__ == '__main__':
             raise
     else:
         if args.debug:
-            print("Finished ripping. You may continue to experiment with the session S and query Q.");
+            print("You may continue to experiment with the session S and query Q.");
             import IPython; IPython.embed()
