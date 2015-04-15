@@ -55,6 +55,15 @@ Date: 2015-03-12 13:20:38.785762
 [kousu@galleon isi]$ 
 ```
 
+A tip:
+once you are comfortable with the tool, write yourself a script `isi_scrape.logined.sh` like this
+```
+#!/bin/sh
+
+HERE=$(dirname $0)
+$HERE/isi_scrape.py -q <username> <password> "$@"
+```
+
 
 ISI Join
 -------
