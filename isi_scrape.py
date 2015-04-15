@@ -71,6 +71,8 @@ from glob import glob #for rip()
 from copy import copy    #for abusively making wrappers
 from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
 
+from textwrap import dedent #tip from http://stackoverflow.com/a/6133466
+
 # library imports
 # (users will need to `pip install` these)
 import requests
@@ -81,6 +83,11 @@ from bs4 import BeautifulSoup
 from isiparse import is_WOS_number
 from util import *
 from httputil import *
+
+
+import builtins
+def print(*args, **kwargs):
+    builtins.print("[isiscrape]", *args, **kwargs)
 
 
 class ISIError(HTTPError):
@@ -936,18 +943,18 @@ class ISIQuery:
     
 
 def tos_warning():
-    print("In using this to download records from the Web of Science, you should be aware of the terms of service:")
-    print()
-    print(
-    "Thomson Reuters determines a “reasonable amount” of data to download by comparing your download activity\n"
-    "against the average annual download rates for all Thomson Reuters clients using the product in question.\n"
-    "Thomson Reuters determines an “insubstantial portion” of downloaded data to mean an amount of data taken\n"
-    "from the product which (1) would not have significant commercial value of its own; and (2) would not act\n"
-    "as a substitute for access to a Thomson Reuters product for someone who does not have access to the product.")
+    print(dedent("""\
+    In using this to download records from the Web of Science, you should be aware of the terms of service:
+    
+    > Thomson Reuters determines a “reasonable amount” of data to download by comparing your download activity
+    > against the average annual download rates for all Thomson Reuters clients using the product in question.
+    > Thomson Reuters determines an “insubstantial portion” of downloaded data to mean an amount of data taken
+    > from the product which (1) would not have significant commercial value of its own; and (2) would not act
+    > as a substitute for access to a Thomson Reuters product for someone who does not have access to the product.
+    
+    The authors of this software take no responsibility for your use of it. Don't get b&.
+    """))
 	# but they don't seem to say 'no botting', just 'no excessive downloading', which sort of implies they expect some amount of botting.
-    print()
-    print("The authors of this software take no responsibility for your use of it. Don't get b&.")
-    print("")
 
 
 # ----------------------------- main
