@@ -1011,11 +1011,15 @@ if __name__ == '__main__':
         print(args) #DEBUG
     
     if args.yes:
+        # -y is implemented by overwriting the function that does the asking ;)
         def ask(a): return True
+    
+    if args.quiet:
+        # -q is the same (XXX is this a good idea?? destroying print()?)
+        def print(*args, **kwargs): pass
     
     def parse_queries(Q):
         for e in Q:
-            
             try:
                 field, query = e.split("=")
                 yield field, query
@@ -1023,8 +1027,7 @@ if __name__ == '__main__':
                 ap.error("Incorrectly formatted query '%s'" % (e,))
     query = list(parse_queries(args.query))
     
-    if not args.quiet:
-        tos_warning()
+    tos_warning()
     
     try:
         query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
@@ -1044,8 +1047,8 @@ if __name__ == '__main__':
         S = AnonymizedUWISISession()
         S.login(args.user, args.barcode)
         
-        print("Logged into ISI as UW:%s." % (args.user,))        
-        print("Querying ISI for %s" % (query,)) #TODO: pretty-print
+        print("Logged into ISI as UW:%s." % (args.user,))
+        print("Querying ISI for %s" % (strquery,))
         Q = S.generalSearch(*query)
                 
         if os.path.isfile("parameters.txt"):
@@ -1087,7 +1090,7 @@ if __name__ == '__main__':
         
         print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
         Q.rip(overwrite=args.overwrite) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion        
-        print("Finished ripping.")
+        print("Finished ripping %s" % (strquery,))
         
     
     except Exception as exc:
