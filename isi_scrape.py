@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
+##tip: add -i to drop to a shell when done--either by succeeding or excepting
 """
 Scraper for the ISI Web of Science
 
@@ -82,7 +83,7 @@ from bs4 import BeautifulSoup
 from isiparse import is_WOS_number
 from util import *
 from httputil import *
-from ezproxy import UWProxy
+from ezproxy import *
 
 MAX_EXPORT = 500 #how many records ISI limits us to in one request
 LOTS = 20000 #how many results we consider to be a large query
@@ -1049,88 +1050,75 @@ if __name__ == '__main__':
             except:
                 ap.error("Incorrectly formatted query '%s'" % (e,))
     query = list(parse_queries(args.query))
-    try: #TODO: this was to catch errors for debugging, but python -i will do the same thing, so 
-        query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
-        query = query[:-1] #chomp the straggling incorrect, "AND"
-
-        # make a new folder for the results, labelled by the query used to generate them
-        strquery = str.join(" ", (args.query))
-        results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
-        
-        # Login to the pay-wall web of science
-        # Currently, using proxy.lib.uwaterloo.ca i hardcoded at this line, but you could replace it
-        proxy = UWProxy
-        
-        # mixin the anonymization
-        class proxy(AnonymizedSession, proxy): pass #LOL WTF BBQ THIS 100% WORKS
-        
-        # log in to the EzProxy server
-        proxy = proxy(args.user, args.barcode)
-        print("Logged into %s as %s." % (proxy.address, args.user,))
-        
-        S = ISI(proxy)
-        
-        # Go into the results subdirectory (which shall be our grave)
-        if not os.path.isdir(results):
-            os.mkdir(results)
-        os.chdir(results)
-        
-        print("Querying ISI for %s" % (strquery,))
-        Q = S.generalSearch(*query)
-        
-        if os.path.isfile("parameters.txt"):
-            # resume a partial download
-            print("Resuming %s" % (results,))
-            with open("parameters.txt") as params:
-                params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
-                assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
-                assert 'Records' in params
-                params['Records'] = int(params['Records'])
-                if 'Estimated' in params:
-                    params['Estimated'] = bool(int(params['Estimated']))
-                    assert params['Estimated'] == Q.estimated, "Mismatched estimate flags: %s vs %s" % (params['Estimated'], Q.estimated)
-            
-            if len(Q) < params['Records']:
-                raise Exception("New query has less results (%d) than the one being resumed (%d). This is probably a giant bug!" % (len(Q), params['records']))
-            elif len(Q) > params['Records']:
-                if not ask("New query has more results (%d) than the one being resumed (%d). "
-                          "So long as both queries were sorted chronologically this should be safe. "
-                          "Continue?" % (len(Q), params['Records'])):
-                    raise SystemExit(0)
-        
-        if len(Q) > LOTS:
-            if not ask("Resultset has a large number of results. Scraping this query might get you banned. Are you sure you want to continue?"):
-                raise SystemExit(0)
-        
-        # record the parameters used for replicability
-        # this could be done better.. pickle? shelve? 
-        with open("parameters.txt","w") as desc:
-            desc.write(dedent("""\
-                  ISI scrape
-                  ==========
-                  
-                  Query: %s
-                  Records: %d
-                  Estimated: %d
-                  Date: %s
-                  """ % (strquery, len(Q), Q.estimated, datetime.datetime.now())))
-        
-        print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
-        Q.rip(overwrite=args.overwrite) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion        
-        print("Finished ripping %s" % (strquery,))
-        
     
-    except Exception as exc:
-        if args.debug:
-            print("------ EXCEPTION ------")
-            traceback.print_exc()
-            print()
-            print("placing exception into 'exc' and dropping to a shell")
-            print()
-            import IPython; IPython.embed()
-        else:
-            raise
-    else:
-        if args.debug:
-            print("You may continue to experiment with the session S and query Q.");
-            import IPython; IPython.embed()
+    query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
+    query = query[:-1] #chomp the straggling incorrect, "AND"
+
+    # make a new folder for the results, labelled by the query used to generate them
+    strquery = str.join(" ", (args.query))
+    results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
+    
+    # Login to the pay-wall web of science
+    # Currently, using proxy.lib.uwaterloo.ca i hardcoded at this line, but you could replace it
+    proxy = UWProxy
+    
+    # mixin the anonymization
+    class proxy(AnonymizedSession, proxy): pass #LOL WTF BBQ THIS 100% WORKS
+    
+    # log in to the EzProxy server
+    proxy = proxy(args.user, args.barcode)
+    print("Logged into %s as %s." % (proxy.address, args.user,))
+    
+    S = ISI(proxy)
+    
+    # Go into the results subdirectory (which shall be our grave)
+    if not os.path.isdir(results):
+        os.mkdir(results)
+    os.chdir(results)
+        
+    print("Querying ISI for %s" % (strquery,))
+    Q = S.generalSearch(*query)
+    
+    if os.path.isfile("parameters.txt"):
+        # resume a partial download
+        print("Resuming %s" % (results,))
+        with open("parameters.txt") as params:
+            params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
+            assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
+            assert 'Records' in params
+            params['Records'] = int(params['Records'])
+            if 'Estimated' in params:
+                params['Estimated'] = bool(int(params['Estimated']))
+                assert params['Estimated'] == Q.estimated, "Mismatched estimate flags: %s vs %s" % (params['Estimated'], Q.estimated)
+        
+        if len(Q) < params['Records']:
+            raise Exception("New query has less results (%d) than the one being resumed (%d). This is probably a giant bug!" % (len(Q), params['records']))
+        elif len(Q) > params['Records']:
+            if not ask("New query has more results (%d) than the one being resumed (%d). "
+                      "So long as both queries were sorted chronologically this should be safe. "
+                      "Continue?" % (len(Q), params['Records'])):
+                raise SystemExit(0)
+    
+    if len(Q) > LOTS:
+        if not ask("Resultset has a large number of results. Scraping this query might get you banned. Are you sure you want to continue?"):
+            raise SystemExit(0)
+    
+    # record the parameters used for replicability
+    # this could be done better.. pickle? shelve? 
+    with open("parameters.txt","w") as desc:
+        desc.write(dedent("""\
+              ISI scrape
+              ==========
+              
+              Query: %s
+              Records: %d
+              Estimated: %d
+              Date: %s
+              """ % (strquery, len(Q), Q.estimated, datetime.datetime.now())))
+    
+    print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
+    Q.rip(overwrite=args.overwrite) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion        
+    print("Finished ripping %s" % (strquery,))
+    
+    # because this is under __main__ and not main()
+    # if you run this with python -i you get dropped here 
