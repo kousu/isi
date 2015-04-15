@@ -32,7 +32,7 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 
 #TODO:
 # [ ] Write a setup.py that installs.
-# [ ] Obvious refactoring: roll all the extract_() calls into ISIQuery.__init__()
+# [ ] Obvious refactoring: roll all the extract_() calls into ISIResults.__init__()
 # [ ] rearchitect so that passwords are passed at __init__
 # [ ] Rearchitect to use composition instead of inheritence (namely: it's awks that ISISession exposes .post() and .get()) 
 #     Doing this while still maintaining the proxy trickery will be a sop.
@@ -51,7 +51,7 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 #     Extract these.
 #   [ ] Handle the case where a article has zero inlinks (in which 
 # [ ] Make python2 compatible (probably with liberal use of the python-future module)
-# [ ] Make ISIQuery more fully featured; in particular, it should be a lazily-loaded sequence which you can iterate over, extracting the basics (via screen scraping)
+# [ ] Make ISIResults more fully featured; in particular, it should be a lazily-loaded sequence which you can iterate over, extracting the basics (via screen scraping)
 # [ ] .rip() is a very scripty function. It basically expects an interactive user with a pristine filesystem; it should be not so noisy!
 #       -> this is an MVC problem creeping in
 # [ ] make Queries record their parameters and write a __str__ which canonicallizes them into a text form, then implicitly use this as fname. Done right, this will really help provenance.
@@ -127,7 +127,7 @@ def extract_qid(soup):
 def extract_count(soup):
     """
     screenscrape the count of records for the current qid
-    this returns a flag if the result is estimated (to be passed through to ISIQuery).
+    this returns a flag if the result is estimated (to be passed through to ISIResults).
      This is complexity, but there's just no other way: sometimes we simply do not have enough data.
     
     returns: (count, estimated)
@@ -498,11 +498,11 @@ class ISISession(requests.Session):
         
         # TODO: if we don't get any results we get sent back to GeneralSearch.do; handle this case
         
-        returns an ISIQuery object. See ISIQuery for how to proceed from there.
+        returns an ISIResults object. See ISIResults for how to proceed from there.
         """
         r = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
         
-        Q = ISIQuery.fromPage(self, r)
+        Q = ISIResults.fromPage(self, r)
         assert Q._search_mode == 'GeneralSearch'
         return Q
         
@@ -521,14 +521,14 @@ class ISISession(requests.Session):
     def outlinks(self, document):
         """
         Given an ISI document ID (aka WOS number aka UT field aka Accession Number),
-        get an ISIQuery over all the documents it cites.
+        get an ISIResults over all the documents it cites.
         
         Now, you also get outlinks in the "CR" field, but those are badly mangled
         MLA-esque single line citations; this API actually gives you the full records.
         However, we make no guarantees that these results match up to the "CR" results; that's up
         to ISI (and their database is full of varying formats and inconsistencies).
         In particular, the WOS includes citations to articles which it does not have;
-        in this case, the missing records are silently elided during ISIQuery.export().
+        in this case, the missing records are silently elided during ISIResults.export().
         If your record counts are not adding up, and especially if you are getting empty .ciw files,
         try the search by hand and see if the results lists "Title: [not available]".
         
@@ -576,14 +576,14 @@ class ISISession(requests.Session):
                      headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
                      params=form) #the outlinks page takes query params, not form POST params; luckily python-requests makes this distinction trivial
         
-        Q = ISIQuery.fromPage(self, r)
+        Q = ISIResults.fromPage(self, r)
         assert Q._search_mode == 'CitedRefList'
         return Q
     
     def inlinks(self, document):
         """
         Given an ISI document ID (aka WOS number aka UT field aka Accession Number),
-        get an ISIQuery over all the documents that cites it.
+        get an ISIResults over all the documents that cites it.
         """
         assert is_WOS_number(document)
         
@@ -592,7 +592,7 @@ class ISISession(requests.Session):
         # WOS number and has no obvious embedded in a link labeled "Times Cited"
         # We do an entire search just to extract the magic link.
         # And we cannot just use generalSearch() because there's no
-        # reasonable way for an ISIQuery to know the magic REFID numbers.
+        # reasonable way for an ISIResults to know the magic REFID numbers.
         r = self._generalSearch(("UT", document))
         r.raise_for_status()
         
@@ -618,7 +618,7 @@ class ISISession(requests.Session):
         # appppparently hitting this with GET creates a new qid on the backend
         
         
-        Q = ISIQuery.fromPage(self, r)
+        Q = ISIResults.fromPage(self, r)
         assert Q._search_mode == 'CitingArticles'
         return Q
     
@@ -636,7 +636,7 @@ class AnonymizedUWISISession(AnonymizedUAMixin, UWISISession):
     pass
 
 
-class ISIQuery:
+class ISIResults:
     """
     You need to create queries in order to extract anything from WOS,
     because their search engine works by first caching result sets.
@@ -681,7 +681,7 @@ class ISIQuery:
         count, estimated = extract_count(soup)
         search_mode = extract_search_mode(soup)
         
-        return ISIQuery(session, search_mode, qid, http_response.url, count, estimated)
+        return ISIResults(session, search_mode, qid, http_response.url, count, estimated)
     
     def __len__(self):
         return self._len
@@ -898,7 +898,7 @@ class ISIQuery:
                               headers={'Referer': base},
                               params=params)
         
-        Q = ISIQuery.fromPage(self._session, r)
+        Q = ISIResults.fromPage(self._session, r)
         assert Q._search_mode == params["search_mode"]
         return Q
         
@@ -935,7 +935,7 @@ class ISIQuery:
                 assert os.path.isfile(fname)
                 continue
             try:
-                print("Exporting records [%d,%d] to %s" % (L,U, fname)) #TODO: if we start multiprocessing it would be useful to see the search query (which ironically isn't stored in ISIQuery)
+                print("Exporting records [%d,%d] to %s" % (L,U, fname)) #TODO: if we start multiprocessing it would be useful to see the search query
                 r = self.export(fname+".part", L, U)
                 os.renames(fname+".part", fname) #by using a .part file we can tolerate partial rips (for simplicity, individual blocks are redownloaded in their entirety)
             except InvalidInput as exc:
