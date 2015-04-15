@@ -62,16 +62,15 @@ downloading a million records and find a lawyer-happy Thomson-Reuters pie on you
 
 # stdlib imports
 import sys, os
+from textwrap import dedent #tip from http://stackoverflow.com/a/6133466
 #import argparse, optparse, ...
-from warnings import warn
+import logging
 import traceback
 
 from itertools import count, cycle
 from glob import glob #for rip()
-from copy import copy    #for abusively making wrappers
-from urllib.parse import urlparse, urlunparse, quote as urlquote, parse_qsl, urljoin
+from urllib.parse import urlparse, urljoin
 
-from textwrap import dedent #tip from http://stackoverflow.com/a/6133466
 
 # library imports
 # (users will need to `pip install` these)
@@ -83,6 +82,7 @@ from bs4 import BeautifulSoup
 from isiparse import is_WOS_number
 from util import *
 from httputil import *
+from ezproxy import UWProxy
 
 MAX_EXPORT = 500 #how many records ISI limits us to in one request
 LOTS = 20000 #how many results we consider to be a large query
@@ -174,92 +174,120 @@ def extract_search_mode(soup):
     search_mode = search_mode['value']
     return search_mode
 
-
+@Wrapped(clone=False)
 class ISIResponse(requests.Response):
-    """
-    Extend an requests.Response to translate ISI's frustratingly non-standard
-    non-HTTP error messages into HTTPErrors.
+    """rel
+    Extend an requests.Response to translate ISI's frustratingly
+    non-standard non-HTTP error messages into standard HTTPErrors.
     
-    Actually, translates them to ISIErrors, but these are subclasses of those.
+    (Actually, translates them to ISIErrors, a more specific subclass)
     """
-    def __new__(cls, response, *args, **kwargs):
-        #print("ISIResponse.__new__:", cls, id(response), response, args, kwargs) #DEBUG
-        # a canonical wrapper would use {g,s}etattr() overloading
-        # why do that when we can just carefully tweak the class response thinks it is?
-        # this has the same effect: it adds all the methods defined below to the object's search path, walking up to requests.Response otherwise
-        #
-        # I hope this doesn't bite us down the line
-        assert isinstance(response, cls.__mro__[1]), "Make sure the argument is in the expected inheritence tree"
-        response = copy(response)
-        response.__class__ = cls
-        
-        # DEBUG
-        # being able to see what ISI gives back helps, especially since ISI seems to return 200 OK for *everything* except actual URL typos
-        #with open("what.html","w") as what:
-        #    what.write(soup.prettify())
-        
-        return response
     
-    def __init__(self, response, *args, **kwargs): #this is only defined to silence the 'response' argument
-        #print("ISIResponse.__init__:", id(self), self, id(response), args, kwargs) #DEBUG
-        pass #we're already initialized because we copy-constructed in __new__()
-        
-    def raise_for_status(self):
+    # TODO: if this ever adds state, it will need to extend
+    #       __setstate__ and __getstate__ because its parent does
+    
+    def raise_for_status(self, *args, **kwargs):
         """
         raise an error on HTTP status messages *or* on on errors from the ISI thingy 
         
         """
-        # first call up, because a 404 will prevent us doing all the rest of the checks
-        #super().raise_for_status()
-        requests.Response.raise_for_status(self)  #<-- copy() breaks super(); for now, hardcode the parent class. TODO: figure out what magic bit needs twiddling.
         
-        # TODO: look at message_key=errors.search.noRecordsFound&error_display_redirect=true instead
-        # client_error_input_message is not always where the error is writting; there's also noHitsMessage and newErrorHead
-        # 
+        #DEBUG: dump all results to disk for inspection
+        #with open("/tmp/isiwhat.html","wb") as what:
+        #    what.write(self.content)
         
-        params = qs_parse(urlparse(self.url).query)
-        if 'error_display_redirect' in params:
-            assert params['error_display_redirect'] == 'true', "ISI only gives this tag if an error actually happened"
-            assert 'message_key' in params, "and in that case, it will give the error key in this"
-            err = params['message_key']
-            
-            # if we see an error, extract the text to go with it by screen scraping
-            # 
-            msg = ""
+        # first call up to make sure we have data to parse
+        #super().raise_for_status() #<-- super() is broken under Wrapped
+        requests.Response.raise_for_status(self, *args, **kwargs) 
+        
+        if 'error' in self.url.lower():
+            err, msg = None, ""
             soup = BeautifulSoup(self.content)
-            soup = soup.find("div", class_="errorMessage")
-            for div in soup("div"):
-                # the error might appear in any of several different sub-divs
-                # my kludgey approximation is to take the first one we see
-                # if we see any
-                if div.text.strip():
-                    msg = div.text.strip()
-                    break
-                        
+            
+            # if we see an error reported in the query string, extract its text by screenscraping
+            params = qs_parse(urlparse(self.url).query)
+            if 'error_display_redirect' in params:
+                assert params['error_display_redirect'] == 'true', "ISI only gives this tag if an error actually happened"
+                assert 'message_key' in params, "and in that case, it will give the error key in this"
+                err = params['message_key']
+                
+                soup = soup.find("div", class_="errorMessage")
+                for div in soup("div"):
+                    # the error might appear in any of several different sub-divs
+                    # my kludgey approximation is to take the first one we see
+                    # if we see any
+                    if div.text.strip():
+                        msg = div.text.strip()
+                        break
+                            
+            elif 'Error' in params:
+                # *or*, low-level errors get a whole different error page
+                # in some cases the previous URL has a more specific error code in it? but not all? and sometimes it changes its mind on the same arguments??
+                #params = qs_parse(urlparse(self.history[-1].url).query)
+                
+                err = params['Error']  
+                msg = soup.find(class_="NEWwokErrorContainer").find(class_="NEWpageTitle").find("h1").text
+            
             raise ISIError.ALL.get(err, ISIError)(err, msg) #look up the appropriate ISIError, falling back on ISIError itself if not known, and instantiate it
-        
+            
 
+@Wrapped(clone=False)
 class ISISession(requests.Session):
     """
-    A requests.Session that hardcodes the magic URLs needed to access http://apps.webofknowledge.com/
+    wrap a requests.Session so that, on requests to ISI pages, the in-page embedded error messages get translated to python exceptions.
+    note that this does undo the hard work requests goes to to lazily load pages, as it has to read and parse the whole page before returning to application code
+    
     """
     
-    def login(self, *args, **kwargs):
-        super().login(*args, **kwargs)
+    def __getstate__(self):
+        state = super().__getstate__()
+        if hasattr(self,'_SID'): state['_SID'] = self._SID
+        return state
+    def __setstate__(self, state):
+        if '_SID' in state:
+            self._SID = state['_SID']
+            del state['_SID']
+        return super().__setstate__(state)
+    
+    @property
+    def SID(self):
+        "The ISI session ID, extracted from URLs"
+        return getattr(self, "_SID", None)
+    @SID.setter
+    def SID(self, value):
+        if hasattr(self, "_SID"):
+            assert self._SID == value, "SID %s should immutable, but instead we received an update %d" % (self._SID, value)
+        else:
+            self._SID = value
+        
+    def request(self, *args, **kwargs):
+        r = ISIResponse(super().request(*args, **kwargs))
+        query = qs_parse(urlparse(r.url).query)
+        if "SID" in query:
+            self.SID = query["SID"]
+        return r
+    
+
+class ISI():
+    """
+    An API for http://apps.webofknowledge.com/wos, implemented with screen-scraping.
+    """
+    def __init__(self, session=None):
+        """
+        if given, session should be a requests.Session (or at least, something API-compatible) to route scraping operations through
+        """
+        if session is None: session = requests.Session()
+        if not isinstance(session, requests.Session): raise TypeError("session")
+        session = ISISession(session)
+        self.session = session
         
         # hit the front page of WoS to extract relevant things that let us pretend to be a Real Browser(TM) better
-        r = self.get("http://isiknowledge.com/wos") #go to the front page like a normal person and create a session
+        r = self.session.get("http://isiknowledge.com/wos") #go to the front page like a normal person and create a session
         r.raise_for_status()
         # find the WoS SID (which is different than the ezproxy SID!)
-        self._SID = qs_parse(urlparse(r.url).query)["SID"]
         self._searchpage = r.url
         # TODO: scrape the search page to extract all the form fields and the form target
         # TODO.. other key things to scrape??
-    
-    def request(self, *args, **kwargs):
-        response = super().request(*args, **kwargs)
-        response = ISIResponse(response)
-        return response
     
     
     def _generalSearch(self, *fields, timespan=None, editions=["SCI", "SSCI", "AHCI", "ISTP", "ISSHP"], sort='LC.D;PY.A;LD.D;SO.A;VL.D;PG.A;AU.A'):
@@ -285,7 +313,7 @@ class ISISession(requests.Session):
             yield 'product', 'WOS' # 'UA' == "all databases", "..." == korean thing, "..." = MedLine, ...; we want WOS because WOS can give us bibliographies, not just 
             yield 'action', 'search' 
             yield 'search_mode', 'GeneralSearch'
-            yield 'SID', self._SID
+            yield 'SID', self.session.SID
         
         def _cruft():
             """
@@ -349,7 +377,7 @@ class ISISession(requests.Session):
                     assert len(fields)-1 == i, "Double checking I got the if right"
             
             if t > max_field_count:
-                warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
+                logging.warn("Submitting %d > %d fields to ISI. ISI might balk." % (fieldCount, max_field_count))
             yield 'fieldCount', t  #the number of fields processed
             yield 'max_field_count', max_field_count #uhhhh, and what happens if I ignore this? omg, I bet ISI is full of SQL injections. :(
         
@@ -405,8 +433,8 @@ class ISISession(requests.Session):
         
         # Do the query
         # this causes ISI to create and cache a resultset
-        r = self.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
-                headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
+        r = self.session.post("http://apps.webofknowledge.com/WOS_GeneralSearch.do",
+                headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self.session.SID}, #TODO: base this URL on the data above
                 data=form)
         return r
         
@@ -502,7 +530,7 @@ class ISISession(requests.Session):
         """
         r = self._generalSearch(*fields, timespan=timespan, editions=editions, sort=sort)
         
-        Q = ISIResults.fromPage(self, r)
+        Q = ISIResults.fromPage(self.session, r)
         assert Q._search_mode == 'GeneralSearch'
         return Q
         
@@ -552,7 +580,7 @@ class ISISession(requests.Session):
             yield "action", "AllCitationService"
             yield "search_mode", "CitedRefList"
             yield "isLinks", "yes" #maybe this belongs in cruft()
-            yield "SID", self._SID
+            yield "SID", self.session.SID
         
         def _cruft():
             yield "returnLink", "http://gilgamesh" #this is, apparently, ignored. Still, TODO: something reasonable, like maybe the same value as headers.referer
@@ -572,11 +600,11 @@ class ISISession(requests.Session):
         form += _cruft()
         form += _query()
             
-        r = self.get("http://apps.webofknowledge.com/InterService.do",
-                     headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self._SID}, #TODO: base this URL on the data above
+        r = self.session.get("http://apps.webofknowledge.com/InterService.do",
+                     headers={'Referer': "http://apps.webofknowledge.com/WOS_GeneralSearch.do?product=WOS&SID=%s&search_mode=GeneralSearch" % self.session.SID}, #TODO: base this URL on the data above
                      params=form) #the outlinks page takes query params, not form POST params; luckily python-requests makes this distinction trivial
         
-        Q = ISIResults.fromPage(self, r)
+        Q = ISIResults.fromPage(self.session, r)
         assert Q._search_mode == 'CitedRefList'
         return Q
     
@@ -614,26 +642,16 @@ class ISISession(requests.Session):
         base = r.url
         link = urljoin(base, link) #resolve the relative link
         
-        r = self.get(link, headers={'Referer': r.url}) #we don't need to deal with params cruft
+        r = self.session.get(link, headers={'Referer': r.url}) #we don't need to deal with params cruft
         # appppparently hitting this with GET creates a new qid on the backend
         
         
-        Q = ISIResults.fromPage(self, r)
+        Q = ISIResults.fromPage(self.session, r)
         assert Q._search_mode == 'CitingArticles'
         return Q
     
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
-
-
-
-
-
-class UWISISession(ISISession, UWProxy):
-    pass
-
-class AnonymizedUWISISession(AnonymizedUAMixin, UWISISession):
-    pass
 
 
 class ISIResults:
@@ -659,8 +677,7 @@ class ISIResults:
             N is the number of results in the query set, if known.
             estimated: whether 'N' is an approximation or not
         """
-        self._session = session
-        self.SID = session._SID
+        self.session = session
         self._search_mode = search_mode
         self.qid = qid
         self.referer = referer
@@ -672,7 +689,10 @@ class ISIResults:
         """
         construct an ISI query from a query result page
         the page, of course, should be something representing a qid
+        and therefore have a qid embedded on it
         """
+        if not isinstance(session, requests.Session):
+            raise TypeError("session")
         http_response.raise_for_status() #XXX does this belong in here or outside?
         
         soup = BeautifulSoup(http_response.content)
@@ -681,7 +701,7 @@ class ISIResults:
         count, estimated = extract_count(soup)
         search_mode = extract_search_mode(soup)
         
-        return ISIResults(session, search_mode, qid, http_response.url, count, estimated)
+        return ISIResults(session, search_mode, qid, http_response.url, N=count, estimated=estimated)
     
     def __len__(self):
         return self._len
@@ -718,7 +738,7 @@ class ISIResults:
                             'colName': 'WOS',
                             
                             # now this part is important
-                            'SID': self._session._SID,
+                            'SID': self.session.SID,
                             'search_mode': self._search_mode,
                             'qid': self.qid,
                             
@@ -790,7 +810,7 @@ class ISIResults:
         
         assert len(params) == 27, "Expected number of params, extracted by hand-counting in Firefox's web inspector"
         # fire!
-        r = self._session.post("http://apps.webofknowledge.com/OutboundService.do?action=go",
+        r = self.session.post("http://apps.webofknowledge.com/OutboundService.do?action=go",
                            headers={'Referer': self.referer},
                            data=params)
         return r
@@ -843,7 +863,7 @@ class ISIResults:
         #  this will make a *new* qid with search_mode == "CitationReport"
         params = {
                   #session
-                  'SID': self.SID,
+                  'SID': self.session.SID,
                   
                   #query
                   'search_mode': 'CitationReport',
@@ -859,7 +879,7 @@ class ISIResults:
         base = self.referer
         link = "/CitationReport.do"
         link = urljoin(base, link)
-        r = self._session.get(link,
+        r = self.session.get(link,
                               headers={'Referer': base},
                               params=params)
         r.raise_for_status()
@@ -877,7 +897,7 @@ class ISIResults:
         base = r.url
         params = {'product': 'WOS',
                   'qid': citationreport_qid,
-                  'SID': self.SID,
+                  'SID': self.session.SID,
                   'betterCount': "Soy sauce as a stimulative agent in the development of beriberi in pigeons", #this is not ignored, but rather
                   #*if an integer* is fed straight into the count on the resultset page; if not an integer, ISI computes the proper value. Hurrah!.
                   # This is just a UI glitch; export() can extract all records regardless,
@@ -894,11 +914,11 @@ class ISIResults:
                            'action': "nonselfCA"})
         
         link = urljoin(base, link)
-        r = self._session.get(link,
+        r = self.session.get(link,
                               headers={'Referer': base},
                               params=params)
         
-        Q = ISIResults.fromPage(self._session, r)
+        Q = ISIResults.fromPage(self.session, r)
         assert Q._search_mode == params["search_mode"]
         return Q
         
@@ -999,16 +1019,17 @@ if __name__ == '__main__':
     
     All records in the resultset will be automatically exported, 500 at a time, to the current directory.
     Currently, the exported filenames will be the session ID ISI's web framework assigned, in lieu of something more meaningful. 
+    
+    Tip: to work with the session and query objects after scrape is complete (or, equally well, to debug them), run with `python -i`.
     """ #^TODO: argparse helpfully reflows the text but this fucks up the formatting that I do want. What do?
-    
-    
     args = ap.parse_args()
     
     #by sorting we enforce that each search has a unique reference for each search
     args.query = sorted(args.query)
     
-    if args.debug: #<-- a bit dangerous, since if -d breaks we won't know it 
-        print(args) #DEBUG
+    if args.debug: #<-- a bit dangerous, since if -d breaks we won't know it
+        logging.root.setLevel(logging.DEBUG) 
+        logging.debug(args) #DEBUG #XXX this leaks passwords
     
     if args.yes:
         # -y is implemented by overwriting the function that does the asking ;)
@@ -1018,6 +1039,8 @@ if __name__ == '__main__':
         # -q is the same (XXX is this a good idea?? destroying print()?)
         def print(*args, **kwargs): pass
     
+    tos_warning()
+    
     def parse_queries(Q):
         for e in Q:
             try:
@@ -1026,10 +1049,7 @@ if __name__ == '__main__':
             except:
                 ap.error("Incorrectly formatted query '%s'" % (e,))
     query = list(parse_queries(args.query))
-    
-    tos_warning()
-    
-    try:
+    try: #TODO: this was to catch errors for debugging, but python -i will do the same thing, so 
         query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
         query = query[:-1] #chomp the straggling incorrect, "AND"
 
@@ -1037,20 +1057,21 @@ if __name__ == '__main__':
         strquery = str.join(" ", (args.query))
         results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
         
+        # Login to the pay-wall web of science
+        # Currently, using proxy.lib.uwaterloo.ca i hardcoded at this line, but you could replace it
+        proxy = UWProxy(args.user, args.barcode)
+        print("Logged into %s as %s." % (proxy.address, args.user,))
+        
+        S = ISI(proxy)
+        
         # Go into the results subdirectory (which shall be our grave)
         if not os.path.isdir(results):
             os.mkdir(results)
         os.chdir(results)
         
-        # Login to the web of science
-        # Currently, proxy.lib.uwaterloo.ca is hardcoded at this line, but you could add another mixed class above and replace this line
-        S = AnonymizedUWISISession()
-        S.login(args.user, args.barcode)
-        
-        print("Logged into ISI as UW:%s." % (args.user,))
         print("Querying ISI for %s" % (strquery,))
         Q = S.generalSearch(*query)
-                
+        
         if os.path.isfile("parameters.txt"):
             # resume a partial download
             print("Resuming %s" % (results,))

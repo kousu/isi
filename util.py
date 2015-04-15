@@ -1,4 +1,74 @@
 
+import logging
+
+from copy import copy    #for abusively making wrappers
+
+def wrap(cls, obj, clone=True):
+    """
+    Dynamically mix in cls to obj's type
+    
+    In some cases you cannot use
+    class Mixin(): ...
+    class Mixed(Mixin, Base): ...
+    o = Mixed()
+    
+    mainly when Base is constructed deep in some library routine.
+    In this case, you can do
+    class Mixin(): ...
+    b = lib.blue_submarine.chug()
+    O = wrap(Mixin, b)
+    
+    The way this works is by tweaking obj's class to be a mixed-in class.
+    This is done to a copy to avoid side-effects, unless pass clone=False
+    This is only safe to do if you know obj is immutable or you are
+    *replacing* the only reference to obj with the wrapper. A caveat is
+    that copy() demands obj be pickleable. *In particular*, if a parent
+    class of obj defines __setstate__/__getstate__, but a child class
+    does not, those child class-specific attribute will be lost.
+    """
+    
+    if not isinstance(clone, bool): raise TypeError("clone")
+    
+    #A typical wrapper uses {g,s}etattr() overloading,  but why do that when you
+    #can just hack up what class the object thinks it is?
+    #As far as I can tell, this has the exact same effect:
+    #all the methods defined in the wrapper class get added to the object's search path
+    
+    if clone:
+        logging.debug("wrap(%s,%s): making clone" % (cls, obj))
+        obj = copy(obj) #make a copy so we are side-effect free
+        # XXX should this be 'deepcopy'?
+    
+    class Wrapped(cls, type(obj)): pass
+    obj.__class__ = Wrapped
+    return obj
+
+
+def Wrapped(cls=None, clone=True):
+    """
+    A decorator which essentially curries cls over wrap()
+    
+    Suggested use:
+    @Wrapped
+    class ExtensionLadder(Base): ...
+    
+    b = lib.blue_submarine.chug()
+    b = ExtensionLadder(b)
+    
+    Via metaprogramming hackery, you can also specify
+    
+    @Wrapped(clone=False)
+    class C: ....
+    
+    The return is a function, not a class. This is a green curtain you should not look behind. 
+    """
+    if not isinstance(clone, bool): raise TypeError("clone")
+    if cls is None:
+        return lambda cls: Wrapped(cls, clone)
+    
+    return lambda obj: wrap(cls, obj, clone)
+
+
 def query(ask, options=["Y","N"], catch="N"):
     "TODO: document"
     options = list(options)
