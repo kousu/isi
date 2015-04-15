@@ -85,10 +85,11 @@ from util import *
 from httputil import *
 
 
+LOTS = 20000 #how many results we consider to be a large query
+
 import builtins
 def print(*args, **kwargs):
     builtins.print("[isiscrape]", *args, **kwargs)
-
 
 class ISIError(HTTPError):
     # TODO: ISI has an inheritence tree of errors available in query param "message_key"; is that tree worth replicating?
@@ -902,7 +903,7 @@ class ISIQuery:
         return Q
         
     
-    def rip(self, overwrite=False, upper_limit=20000):
+    def rip(self, overwrite=False, upper_limit=LOTS):
         """
         Export all records available in this query.
         
@@ -969,9 +970,10 @@ if __name__ == '__main__':
     ap.add_argument('user', type=str, help="Your last name, as you use to log in to the UW library proxy")
     ap.add_argument('barcode', type=str, help="Your 14 digit library card barcode number (not your student ID!)")
     ap.add_argument('query', type=str, nargs="+", help="A query in the form FD=filter where FD is the field and filter is what to search for in that field.")
-    ap.add_argument('-o', '--overwrite', action="store_true", help="Overwrite previous scrapes")
+    ap.add_argument('-o', '--overwrite', action="store_true", help="Overwrite previous scrapes. By default, only append new records, if any.")
     ap.add_argument('-q', '--quiet', action="store_true", help="Silence most output")
     ap.add_argument('-d', '--debug', action="store_true", help="Enable debugging")
+    ap.add_argument('-y', '--yes', action="store_true", help="Automatically choose yes to any prompts.")
     ap.epilog = """
     Fields are given by two letter codes as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_wos_fieldtags.html.
     Filters support globbing as documented at http://images.webofknowledge.com/WOKRS5161B5_fast5k/help/WOS/hs_search_rules.html.
@@ -998,6 +1000,9 @@ if __name__ == '__main__':
     if args.debug: #<-- a bit dangerous, since if -d breaks we won't know it 
         print(args) #DEBUG
     
+    if args.yes:
+        def ask(a): return True
+    
     def parse_queries(Q):
         for e in Q:
             
@@ -1012,7 +1017,6 @@ if __name__ == '__main__':
         tos_warning()
     
     try:
-        
         query = flatten(zip(query,  cycle(["AND"]))) #this line is line "AND".join(query)
         query = query[:-1] #chomp the straggling incorrect, "AND"
 
@@ -1020,79 +1024,61 @@ if __name__ == '__main__':
         strquery = str.join(" ", (args.query))
         results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
         
-        if os.path.exists(results): #XXX should this be checked before or after partial? what do you want to happen if *both* exist?
-            print("%s already exists" % (results,))
-            if not args.overwrite:
-                raise SystemExit(1)
+        # Go into the results subdirectory (which shall be our grave)
+        if not os.path.isdir(results):
+            os.mkdir(results)
+        os.chdir(results)
         
-        # we don't download directly to the results folder; instead, we use a .part (like firefox/chrome/etc) so that downloads can be resumed
-        partial_results = results+".part"
-        try:
-            # resume a partial download
-            with open(os.path.join(partial_results, "parameters.txt")) as params:
-                params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
-                assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
-                assert 'Records' in params
-                params['Records'] = int(params['Records'])
-            print("Resuming %s" % (partial_results,))
-        except OSError:
-            # new download! (or overwriting an old one) ((we don't actually do the overwrite until the partial download finishes, below))
-            params = None
-            if not os.path.isdir(partial_results):
-                os.mkdir(partial_results)
-        
-        # ---- inside of the subdirectory ----
-        _curdir, _ = os.getcwd(), os.chdir(partial_results)        
-        
+        # Login to the web of science
+        # Currently, proxy.lib.uwaterloo.ca is hardcoded at this line, but you could add another mixed class above and replace this line
         S = AnonymizedUWISISession()
         S.login(args.user, args.barcode)
         
         print("Logged into ISI as UW:%s." % (args.user,))        
         print("Querying ISI for %s" % (query,)) #TODO: pretty-print
         Q = S.generalSearch(*query)
-        
-        
-        if params is not None: 
-            #on resuming a partial download
-            if Q.estimated:
-                raise NotImplementedError("We do not yet support resuming queries with an estimated number of results")
+                
+        if os.path.isfile("parameters.txt"):
+            # resume a partial download
+            print("Resuming %s" % (results,))
+            with open("parameters.txt") as params:
+                params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
+                assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
+                assert 'Records' in params
+                params['Records'] = int(params['Records'])
+                if 'Estimated' in params:
+                    params['Estimated'] = bool(int(params['Estimated']))
+                    assert params['Estimated'] == Q.estimated, "Mismatched estimate flags: %s vs %s" % (params['Estimated'], Q.estimated)
+            
             if len(Q) < params['Records']:
                 raise Exception("New query has less results (%d) than the one being resumed (%d). This is probably a giant bug!" % (len(Q), params['records']))
             elif len(Q) > params['Records']:
-                Y = input("New query has more results (%d) than the one being resumed (%d). "
+                if not ask("New query has more results (%d) than the one being resumed (%d). "
                           "So long as both queries were sorted chronologically this should be safe. "
-                          "Continue? [Y/n] " % (len(Q), params['Records'])).upper()
-                if not Y: Y = "Y" #<-- default to 'yes' 
-                if Y != "Y":      #<-- but whitelisting: invalid input is the same as 'no'
+                          "Continue?" % (len(Q), params['Records'])):
                     raise SystemExit(0)
+        
+        if len(Q) > LOTS:
+            if not ask("Resultset has a large number of results. Scraping this query might get you banned. Are you sure you want to continue?"):
+                raise SystemExit(0)
         
         # record the parameters used for replicability
         # this could be done better.. pickle? shelve? 
         with open("parameters.txt","w") as desc:
-            print("ISI scrape\n"
-                  "==========\n"
-                  "\n"
-                  "Query: %s\n"
-                  "Records: %d\n"
-                  "Date: %s\n" %      
-                  (strquery, len(Q), datetime.datetime.now()), file=desc)
-        print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
-        Q.rip(overwrite=False) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion
+            desc.write(dedent("""\
+                  ISI scrape
+                  ==========
+                  
+                  Query: %s
+                  Records: %d
+                  Estimated: %d
+                  Date: %s
+                  """ % (strquery, len(Q), Q.estimated, datetime.datetime.now())))
         
+        print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
+        Q.rip(overwrite=args.overwrite) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion        
         print("Finished ripping.")
         
-        os.chdir(_curdir)
-        # ---- out of the subdirectory ----
-        
-        if os.path.exists(results): #XXX should this be checked before or after partial? what do you want to happen if *both* exist?
-            if args.overwrite:
-                print("Overwriting %s" % (results,))
-                rm(results)
-            else:
-                # it shouldn't be possible to get here, because if os.exists(results) without -o
-                # (unless the user creates the results folder while we were ripping for some reason, but crashing is probably a fair response to that)
-                assert False, "NOTREACHED"
-        os.renames(partial_results, results)
     
     except Exception as exc:
         if args.debug:

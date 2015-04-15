@@ -1,4 +1,15 @@
 
+def query(ask, options=["Y","N"], catch="N"):
+    "TODO: document"
+    options = list(options)
+    assert catch in options, "Catchall case should be in your list of valid options, or else what are you doing with your life?"
+    R = input("%s [%s] " % (ask, "/".join(options))).upper()
+    if not R: R = options[0]
+    if R not in options: R = catch
+    return R
+
+def ask(ask): return query(ask) == "Y"
+
 from itertools import chain
 
 def list_ret(g):
