@@ -60,48 +60,70 @@ class EzProxy(requests.Session):
         self._logged_in = False
         self._user = None
     
-    def login(self, barcode, last_name):
-        # TODO there's apparently a slew of auth methods for ezproxy: https://www.oclc.org/support/services/ezproxy/documentation/usr.en.html
-        #      it is not clear if these are backend-only things and "http://login.<ezproxy>/login" is a standard frontend
-        #       or if I need to write loginLDAP(), loginCAS(), ....
-        #      maybe /login is the default that comes with EzProxy; in that case, when someone wants to extend this for their library, I will gladly accept pull requests
+    def login(self, barcode, last_name, url=None):
+        """
+        login to an EzProxy proxy using its default login address and
+        its default credentials of a library barcode number + last name
+        
+        login optionally takes a url= parameter which is meant for
+        seamlessly bouncing users back to their target article database
+        You almost certainly do not need this, but some URLs get mapped
+        via a secret per-institution(?) database to a canonical URL, so
+        this parameter is supported just in case.
+        # XXX maybe this is feature creep
+        
+        For sites which do not use the default, anything else listed in, 
+        https://www.oclc.org/support/services/ezproxy/documentation/usr.en.html
+        (which includes custom CGI scripts, so *anything* is possible)
+        override or otherwise don't use this method.
+        """
         assert not self._logged_in
         
-        try:
-            self._logged_in = "logging_in" #workaround the assert in request(). I want to keep that assert for the common case, but it breaks this initial step.
-            
-            # Log in to by going to https://login.{proxy}/login
-            r = self.post("https://login/login", #this crippled URL is because this call itself gets routed through the proxy hackery in self.request()
-                data={  #"url": "http://4chan.org",
-                        #/login optionally takes a url= parameter to redirect you to a target page (meant to be used to seamlessly send users back)
-                        # It actually sends you to https://login.<proxy>/connect?session=s${SID}N&url=${URL} which, if it recognizes the site, sends you to its canonical URL
-                        # (and otherwise(???) you get sent to https://login.<proxy>/menu)
-                      
-                      # credentials
-                      #yes, the EzProxy reverses what you'd expect to be the definition of 'username' and 'password'
-                      "user": barcode,
-                      "pass": last_name})
-            
-            r.raise_for_status() #quick way to make sure we have 200 OK
-            
-            #make sure that the login process appears to have given us the magic ticket
-            if "ezproxy" not in self.cookies:
-                raise LoginError()
-            
-        except:
-            self._logged_in = False # roll back the login state
-            raise
-            
+        # Log in to by POSTing to https://login.{proxy}/login
+        
+        params = {#credentials
+                  # yes, the EzProxy reverses what you'd expect to be
+                  # the definition of 'username' and 'password'
+                  "user": barcode,
+                  "pass": last_name}
+                  
+        # If you use url, /login sends you to
+        # https://login.<proxy>/connect?session=s${SID}N&url=${URL} which,
+        # if it recognizes the site, sends you to its canonical URL
+        # If you don't use URL (or if it's not recognized??) you are sent to
+        # https://login.<proxy>/menu
+        if url is not None:
+            params['url'] = url
+        
+        # we super().request() instead of super().post() to avoid
+        # recursing badly into self.request() which expects the login up
+        # (super().post() helpfully calls self.request(), see, and
+        #  normally this is helpful but here it gets in the way)
+        r = super().request('POST',
+                            self.proxify("https://login/login"), #this funny looking URL will be fixed by proxify() munges it
+                            data=params)
+        
+        r.raise_for_status() #quick way to make sure we have 200 OK
+        
+        #make sure that the login process appears to have given us the magic ticket
+        if "ezproxy" not in self.cookies:
+            raise LoginError()
+        
         # if everything is peachy, record who's account we're using
         self._logged_in = True
         self._user = last_name
+        
         logging.debug("Started new EzProxy session %s" % (self,))
     
     def request(self, verb, url, *args, **kwargs):
         """
         Rewrite all requests going through this session to go through the library proxy.
         """
-        assert self._logged_in == "logging_in" or self._logged_in, "Must be logged in to use the library proxy" #it will 302 to the login page if you're not; since this would be confusing when scripting, just disallow it.               
+        if not self._logged_in:
+            # it will 302 to the login page if you're not logged in
+            # since this would be confusing when scripting (you'd end up with a 200),
+            # just disallow it.
+            raise RuntimeError("Must be logged in to use the library proxy") 
         
         # TODO: implement backoff on timeouts.
         #   My first guess is that right here is a good place for it,
@@ -113,16 +135,20 @@ class EzProxy(requests.Session):
         #  --> requests *already does* retrials, but gives up after 3 attempts  
         
         # rewrite the referer to use the proxy too
-        # TODO: where else do we leak URLs?
-        #       anything in self.headers, for one
+        # TODO: where else do have leak URLs that might be leaking?
+        #       anything in self.headers, for one.. what about other cookies?
         if 'headers' in kwargs:
             if 'Referer' in kwargs['headers']:
-                kwargs['headers']['Referer'] = self.proxyify(kwargs['headers']['Referer'])
+                kwargs['headers']['Referer'] = self.proxify(kwargs['headers']['Referer'])
         
-        logging.debug("Session.request(%s, %s, *%s, **%s)" % (verb, self.proxyify(url), args, kwargs))
-        return super().request(verb, self.proxyify(url), *args, **kwargs)
+        return super().request(verb, self.proxify(url), *args, **kwargs)
         
-    def proxyify(self, url):
+    def send(self, *args, **kwargs):
+        "hook send() purely for tracing"    
+        logging.debug("%r.send(*%s, **%s)" % (self, args, kwargs)) 
+        return super().send(*args, **kwargs)
+    
+    def proxify(self, url):
         scheme, host, path, params, query, fragment = urlparse(url)
         #    Response objects returned from this Session should have all references
         #    to the proxy in headers, cookies, and html silently stripped, so that following a link
@@ -134,7 +160,7 @@ class EzProxy(requests.Session):
         return urlunparse((scheme, host, path, params, query, fragment))
     
     def __str__(self):
-        if self._logged_in == True:
+        if self.__dict__.get('_logged_in', False):
                 return "<%s@%s [session:%s]>" % (self._user, self.address, self.cookies["ezproxy"])
         else:
                 return "<EzProxy @%s>" % (self.address,)
