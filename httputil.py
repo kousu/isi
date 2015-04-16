@@ -22,6 +22,8 @@ class AnonymizedSession(requests.Session):
     """
     a requests.Session mixin that tweaks settings to try to anonymize some of our details,
     just because there's no reason not to fly under the radar if we can.
+    
+    
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

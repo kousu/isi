@@ -271,7 +271,6 @@ class ISISession(requests.Session):
             if hasattr(self, "timeout"):
                 kwargs["timeout"] = self.timeout
         
-            
         r = ISIResponse(super().request(*args, **kwargs))
         query = qs_parse(urlparse(r.url).query)
         if "SID" in query:
@@ -1053,8 +1052,6 @@ if __name__ == '__main__':
         # -q is the same (XXX is this a good idea?? destroying print()?)
         def print(*args, **kwargs): pass
     
-    tos_warning()
-    
     def parse_queries(Q):
         for e in Q:
             try:
@@ -1071,6 +1068,27 @@ if __name__ == '__main__':
     strquery = str.join(" ", (args.query))
     results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
     
+    
+    resuming = False
+    if os.path.isfile(os.path.join(results, "parameters.txt")):
+        # resume a partial download
+        resuming = True
+        with open(os.path.join(results, "parameters.txt")) as params:
+            params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
+            assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
+            assert 'Records' in params
+            params['Records'] = int(params['Records'])
+            if 'Estimated' in params:
+                params['Estimated'] = bool(int(params['Estimated']))
+        
+        # decide if this set is complete already or not
+        # TODO: this is super dumb, it just checks if the last block of records exists
+        if glob(os.path.join(results,"*-%04d.ciw" % params['Records'])):        
+            print("Completed %s" % (strquery,))
+            raise SystemExit(0)
+        print("Resuming %s" % (strquery,))
+    
+    
     # Login to the pay-wall web of science
     # Currently, using proxy.lib.uwaterloo.ca i hardcoded at this line, but you could replace it
     proxy = UWProxy
@@ -1082,35 +1100,41 @@ if __name__ == '__main__':
     proxy = proxy(args.user, args.barcode)
     print("Logged into %s as %s." % (proxy.address, args.user,))
     
+    tos_warning()
     S = ISI(proxy)
     
-    # Go into the results subdirectory (which shall be our grave)
+    
+    # If we successfully logged in, go into the results subdirectory
+    # (which shall be our grave, so we don't save the old dir)
     if not os.path.isdir(results):
         os.mkdir(results)
     os.chdir(results)
-        
+    
+    
+    
     print("Querying ISI for %s" % (strquery,))
+    # remember: you need to do this so that the DB will let you download anything
     Q = S.generalSearch(*query)
     
-    if os.path.isfile("parameters.txt"):
-        # resume a partial download
-        print("Resuming %s" % (results,))
-        with open("parameters.txt") as params:
-            params = dict(l.replace("\n","").split(": ", 1) for l in params if ": " in l)
-            assert params['Query'] == strquery, "The old query '%s' does not match the current '%s'." % (params['Query'], strquery) #TODO: just warn instead of crash
-            assert 'Records' in params
-            params['Records'] = int(params['Records'])
-            if 'Estimated' in params:
-                params['Estimated'] = bool(int(params['Estimated']))
-                assert params['Estimated'] == Q.estimated, "Mismatched estimate flags: %s vs %s" % (params['Estimated'], Q.estimated)
-        
+    if resuming:
         if len(Q) < params['Records']:
-            raise Exception("New query has less results (%d) than the one being resumed (%d). This is probably a giant bug!" % (len(Q), params['records']))
+            raise RuntimeError("New query has less results (%d) than the one being resumed (%d). This is probably a giant bug!" % (len(Q), params['Records']))
         elif len(Q) > params['Records']:
             if not ask("New query has more results (%d) than the one being resumed (%d). "
                       "So long as both queries were sorted chronologically this should be safe. "
                       "Continue?" % (len(Q), params['Records'])):
                 raise SystemExit(0)
+        
+        if 'Estimated' in params:
+            assert params['Estimated'] == Q.estimated, "Mismatched estimate flags: %s vs %s" % (params['Estimated'], Q.estimated)
+        
+        # TODO: don't make any connections if we are resuming until we know what actually needs downloading
+        #    conversely don't make any folders if we can't connect
+        #    this means adjusting the flow to have two paths
+        # --> one way to do this would be to make "if not logged in" in EzProxy **call login()** 
+    
+    
+    
     
     if len(Q) > LOTS:
         if not ask("Resultset has a large number of results. Scraping this query might get you banned. Are you sure you want to continue?"):
@@ -1131,7 +1155,7 @@ if __name__ == '__main__':
     
     print("Collecting %s%d results from %s" % ("an estimated " if Q.estimated else "", len(Q), strquery))
     Q.rip(overwrite=args.overwrite) #we never overwrite Q results since that functionality is done by renaming the whole directory on completion        
-    print("Finished ripping %s" % (strquery,))
+    print("Completed %s" % (strquery,))
     
     # because this is under __main__ and not main()
     # if you run this with python -i you get dropped here 
