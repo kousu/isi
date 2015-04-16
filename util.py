@@ -1,72 +1,128 @@
 
 import logging
 
-from copy import copy    #for abusively making wrappers
+from copy import deepcopy    #for abusively making wrappers
 
-def wrap(cls, obj, clone=True):
+
+class BlockReinit:
+    #def __new__(cls, *args, **kwargs):
+    #    pass
+    # ?? is there a sensible way to trick wrapper
+    def __init__(self, *args, **kwargs):
+        logging.debug("blocking reinitialization of super() of %r; extra args: *%s, **%s" % (self, args, kwargs)) #DEBUG
+        pass
+
+def wrapper(*cls, clone=True):
     """
-    Dynamically mix in cls to obj's type
+    Dynamically mix in classes before a given obj's type.
     
-    In some cases you cannot use
+    (actually returns a callable which will do the mixing)
+    
+    In some cases you cannot or do not want to use
+    ```
     class Mixin(): ...
     class Mixed(Mixin, Base): ...
     o = Mixed()
-    
-    mainly when Base is constructed deep in some library routine.
-    In this case, you can do
+    ```
+    mainly when Base is constructed deep in some library routine,
+    With wrapper, you can do
+    ```
     class Mixin(): ...
     b = lib.blue_submarine.chug()
-    O = wrap(Mixin, b)
+    O = wrapper(Mixin)(b)
+    ```
+    You can also do this if you just don't want to for the sake of
+    composability: if you have a lot of mixins it's a nuisance to
+    prepare an exponential number of combinations:
+    class MixedABC(A,B,C,Base): pass
+    class MixedAC(A,C,Base): pass
+    ...
     
-    The way this works is by tweaking obj's class to be a mixed-in class.
-    This is done to a copy to avoid side-effects, unless pass clone=False
-    This is only safe to do if you know obj is immutable or you are
-    *replacing* the only reference to obj with the wrapper. A caveat is
-    that copy() demands obj be pickleable. *In particular*, if a parent
-    class of obj defines __setstate__/__getstate__, but a child class
-    does not, those child class-specific attribute will be lost.
+    rather, at the point of need, you can say
+    o = wrapper(A,B)(o)
+    to prepend classes A and B to o's search path
+    
+    This has been coded so that Mixin can be used either normally or under wrap()
+    However, since the wrapped version does not receive the construction arguments
+    (i.e. Base.__init__() doesn't happen a second time and the arguments to the original are lost)
+    Mixin needs to tolerate not either receiving or not receiving the init args.
+    Use this idiom for greatest compatibility:
+    class Mixin(Base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            del args, kwargs #to ensure no code below can rely on these
+            # ...
+    (if your class has no specific base you can elide that part)
+    Luckily, most mixins fit this mold.
+    
+    To avoid side-effects, a deep copy is made of obj.
+    If you want to save the effort, and *you know obj is immutable* or
+    *you are replacing the only reference to obj* you can pass clone=False.
+    o = wrapper(A,B, clone=False)(o)
+    *CAVEAT*: copy() demands obj be pickleable. *In particular*, if an
+    ancestor of obj defines __setstate__/__getstate__, but a more child
+    ancestor (including self) does not, any child class-specific attributes
+    will be mishandled at wrapping time and you will have only confusion bacon.
     """
     
-    if not isinstance(clone, bool): raise TypeError("clone")
+    if not isinstance(clone, bool): raise TypeError("clone should be a bool")
     
-    #A typical wrapper uses {g,s}etattr() overloading,  but why do that when you
-    #can just hack up what class the object thinks it is?
+    # Implementation:
+    #A typical wrapper uses {g,s}etattr() overloading, but why do that
+    #when you can just hack up what class the object thinks it is?
     #As far as I can tell, this has the exact same effect:
     #all the methods defined in the wrapper class get added to the object's search path
     
-    if clone:
-        logging.debug("wrap(%s,%s): making clone" % (cls, obj))
-        obj = copy(obj) #make a copy so we are side-effect free
-        # XXX should this be 'deepcopy'?
+    # this could also be solved as a metaclass problem
     
-    class Wrapped(cls, type(obj)): pass
-    obj.__class__ = Wrapped
-    return obj
+    def __new__(obj):
+        logging.debug("wrapper.__new__(cls=*%s, obj=%s)" % (cls, obj))
+        _cls = cls + (BlockReinit, type(obj))
+        class W(*_cls): pass
+        if clone:
+            logging.debug("wrapper.__new__(cls=%s, obj=%s): cloning" % (cls, obj))
+            obj = deepcopy(obj)
+        obj.__class__ = W
+        obj.__init__()
+        return obj
+    return __new__
 
 
-def Wrapped(cls=None, clone=True):
-    """
-    A decorator which essentially curries cls over wrap()
+def test_wrap():
+    class X:
+        def __init__(self, *args, **kwargs):
+            logging.debug("X.__init__(*%s, **%s)" % (args, kwargs))
+            self.args = args
+            self.__dict__.update(kwargs)
     
-    Suggested use:
-    @Wrapped
-    class ExtensionLadder(Base): ...
     
-    b = lib.blue_submarine.chug()
-    b = ExtensionLadder(b)
+    class W(X):
+        "test wrap()-able class"
+        def __init__(self, *args, **kwargs):
+            logging.debug("W.__init__(*%s,**%s)" % (args, kwargs))
+            super().__init__(*args, **kwargs); del args, kwargs
+            self.antelope = "deer"
     
-    Via metaprogramming hackery, you can also specify
+    def test_wrapped(clone=False):
+        logging.debug("---- wrapped test (clone=%s)" % (clone,))
+        logging.debug("Constructing original object")
+        o = X(6,7,8,happy="sad",pacha="ziggurat",antelope="monkeyman") #mock "library" construction that we "can't" control
+        logging.debug(o.__class__)
+        assert o.antelope is "monkeyman"
+        logging.debug("Wrapping original object (clone=%s)" %(clone,))
+        o = wrapper(W, clone=clone)(o)
+        assert o.antelope is "deer"
+    def test_nonwrapped():
+        logging.debug("---- Non-wrapped test")
+        logging.debug("Constructing original (and only) object")
+        o = W(sandy_hills="in arabia")
+        assert o.sandy_hills is "in arabia"
+        assert not hasattr(o, 'happy')
+        assert o.antelope is "deer"
     
-    @Wrapped(clone=False)
-    class C: ....
-    
-    The return is a function, not a class. This is a green curtain you should not look behind. 
-    """
-    if not isinstance(clone, bool): raise TypeError("clone")
-    if cls is None:
-        return lambda cls: Wrapped(cls, clone)
-    
-    return lambda obj: wrap(cls, obj, clone)
+    test_nonwrapped()
+    test_wrapped(True)
+    test_wrapped(False)
 
 
 def query(ask, options=["Y","N"], catch="N"):
@@ -148,3 +204,9 @@ def parse_american_int(c):
         raise TypeError
     #dirty hack; also what SO decided on: http://stackoverflow.com/questions/2953746/python-parse-comma-separated-number-into-int
     return int(c.replace(",",""))
+
+
+if __name__ == '__main__':
+    logging.root.setLevel(logging.DEBUG)
+    test_wrap()
+    print("%s tests passed" %(__file__))

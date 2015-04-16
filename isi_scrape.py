@@ -175,7 +175,6 @@ def extract_search_mode(soup):
     search_mode = search_mode['value']
     return search_mode
 
-@Wrapped(clone=False)
 class ISIResponse(requests.Response):
     """rel
     Extend an requests.Response to translate ISI's frustratingly
@@ -232,7 +231,6 @@ class ISIResponse(requests.Response):
             raise ISIError.ALL.get(err, ISIError)(err, msg) #look up the appropriate ISIError, falling back on ISIError itself if not known, and instantiate it
             
 
-@Wrapped(clone=False)
 class ISISession(requests.Session):
     """
     wrap a requests.Session so that, on requests to ISI pages, the in-page embedded error messages get translated to python exceptions.
@@ -271,7 +269,7 @@ class ISISession(requests.Session):
             if hasattr(self, "timeout"):
                 kwargs["timeout"] = self.timeout
         
-        r = ISIResponse(super().request(*args, **kwargs))
+        r = wrapper(ISIResponse)(super().request(*args, **kwargs))
         query = qs_parse(urlparse(r.url).query)
         if "SID" in query:
             self.SID = query["SID"]
@@ -284,11 +282,11 @@ class ISI():
     """
     def __init__(self, session=None):
         """
-        if given, session should be a requests.Session (or at least, something API-compatible) to route scraping operations through
+        if given, session should be a requests.Session to route scraping operations through
         """
         if session is None: session = requests.Session()
         if not isinstance(session, requests.Session): raise TypeError("session")
-        session = ISISession(session)
+        session = wrapper(ISISession)(session)
         if not hasattr(session,'timeout'):
             session.timeout = 29 #set a default timeout, so that getting kicked off doesn't just hang for hours; 
 
