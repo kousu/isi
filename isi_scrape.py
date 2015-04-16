@@ -294,6 +294,8 @@ class ISI():
 
         self.session = session
         
+        self.TOS_warning()
+        
         # hit the front page of WoS to extract relevant things that let us pretend to be a Real Browser(TM) better
         r = self.session.get("http://isiknowledge.com/wos") #go to the front page like a normal person and create a session
         r.raise_for_status()
@@ -663,6 +665,22 @@ class ISI():
         assert Q._search_mode == 'CitingArticles'
         return Q
     
+    @staticmethod
+    def TOS_warning():
+        print(dedent("""\
+        In using this to download records from the Web of Science, you should be aware of the terms of service:
+        
+        > Thomson Reuters determines a “reasonable amount” of data to download by comparing your download activity
+        > against the average annual download rates for all Thomson Reuters clients using the product in question.
+        > Thomson Reuters determines an “insubstantial portion” of downloaded data to mean an amount of data taken
+        > from the product which (1) would not have significant commercial value of its own; and (2) would not act
+        > as a substitute for access to a Thomson Reuters product for someone who does not have access to the product.
+        
+        The authors of this software take no responsibility for your use of it. Don't get b&.
+        """))
+	    # but they don't seem to say 'no botting', just 'no excessive downloading', which sort of implies they expect some amount of botting.
+
+    
     #def __str__(self):
     #    return "<%s: %s " % (type(self),) #???
 
@@ -984,21 +1002,6 @@ class ISIResults:
     
     def __str__(self):
         return "<%s: %d records%s>" % (type(self).__name__, len(self), " (approximately)" if self.estimated else "") #<-- this could be better
-    
-
-def tos_warning():
-    print(dedent("""\
-    In using this to download records from the Web of Science, you should be aware of the terms of service:
-    
-    > Thomson Reuters determines a “reasonable amount” of data to download by comparing your download activity
-    > against the average annual download rates for all Thomson Reuters clients using the product in question.
-    > Thomson Reuters determines an “insubstantial portion” of downloaded data to mean an amount of data taken
-    > from the product which (1) would not have significant commercial value of its own; and (2) would not act
-    > as a substitute for access to a Thomson Reuters product for someone who does not have access to the product.
-    
-    The authors of this software take no responsibility for your use of it. Don't get b&.
-    """))
-	# but they don't seem to say 'no botting', just 'no excessive downloading', which sort of implies they expect some amount of botting.
 
 
 # ----------------------------- main
@@ -1084,7 +1087,7 @@ if __name__ == '__main__':
         # decide if this set is complete already or not
         # TODO: this is super dumb, it just checks if the last block of records exists
         if glob(os.path.join(results,"*-%04d.ciw" % params['Records'])):        
-            print("Completed %s" % (strquery,))
+            logging.info("Not resuming %s: already complete." % (strquery,))
             raise SystemExit(0)
         print("Resuming %s" % (strquery,))
     
@@ -1100,7 +1103,6 @@ if __name__ == '__main__':
     proxy = proxy(args.user, args.barcode)
     print("Logged into %s as %s." % (proxy.address, args.user,))
     
-    tos_warning()
     S = ISI(proxy)
     
     
