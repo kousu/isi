@@ -252,7 +252,7 @@ class ISISession(requests.Session):
     
     @property
     def SID(self):
-        "The ISI session ID, extracted from URLs"
+        "The ISI session ID, as extracted from URL query strings"
         return getattr(self, "_SID", None)
     @SID.setter
     def SID(self, value):
@@ -962,18 +962,19 @@ class ISIResults:
         """
         
         # hard limit the number of records to scrape
+        L = 0
         if upper_limit: U = min(len(self), upper_limit)
         else: U = len(self)
         
         # A bunch of things in this one-liner:
+        # - L and U are overwritten. deal with it.
         # - the chain() produces the endpoints of each MAX_EXPORT-large block
         #   - the inner range() gives all endpoints *except* the last one (because range() is half-open in python), so we have to tack it on.
         # - ISI ranges are closed, not half-open like python, so need to adjust:
         #   - ISI starts counting at 1 (of course, why wouldn't it?) so we start counting at 1
         # note!: the web UI declines to let you export more records than available, however the API will accept such a request and just the subset available
         #       so we could just request 500 records at a time, but that feel dangerous, and it also makes the last export get named wrong
-        
-        blocks = ((L+1, U) for L, U in pairs(chain(range(0, U, MAX_EXPORT), [U])))
+        blocks = ((L+1, U) for L, U in pairs(chain(range(L, U, MAX_EXPORT), [U])))
         for L, U in blocks:
             fname = "%04d-%04d.ciw" % (L,U) #XXX the '4' is a hardcode: most cases will have a few thousand
             if not overwrite and os.path.exists(fname):
@@ -988,10 +989,10 @@ class ISIResults:
                 r = self.export(fname+".part", L, U)
                 os.renames(fname+".part", fname) #by using a .part file we can tolerate partial rips (for simplicity, individual blocks are redownloaded in their entirety)
             except InvalidInput as exc:
+                logging.error("Quitting on block [%d,%d), instead of reaching expected count %d" % (L,U,len(self))) #DEBUG
                 if self.estimated:
-                    # break if we run off the end of the query because our count was wrong
-                    traceback.print_exc() #DEBUG
-                    print("Quitting on block [%d,%d), instead of reaching expected count d" % (L,U,len(self))) #DEBUG
+                    # if we run off the end of the query because our count
+                    # was wrong because it was an estimate, it is not an error
                     break
                 else:
                     # all other ISI errors, or anything else, are thrown up the stack
@@ -1069,6 +1070,7 @@ if __name__ == '__main__':
     strquery = str.join(" ", (args.query))
     results = strquery.replace(" ","_") #TODO: find a generalized make_safe_for_filename() function. That's gotta exist somewhere...
     
+    print("Target: %s" % (strquery,))
     
     resuming = False
     if os.path.isfile(os.path.join(results, "parameters.txt")):

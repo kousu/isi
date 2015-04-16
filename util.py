@@ -125,6 +125,8 @@ def test_wrap():
     test_wrapped(False)
 
 
+
+import os
 def query(ask, options=["Y","N"], catch="N"):
     "TODO: document"
     options = list(options)
@@ -134,7 +136,12 @@ def query(ask, options=["Y","N"], catch="N"):
     if R not in options: R = catch
     return R
 
-def ask(ask): return query(ask) == "Y"
+def ask(ask):
+    "Ask a Y/N question; defaults to *no* on errors"
+    try:
+        return query(ask) == "Y"
+    except:
+        return False
 
 from itertools import chain
 
