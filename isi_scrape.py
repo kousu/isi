@@ -262,6 +262,16 @@ class ISISession(requests.Session):
             self._SID = value
         
     def request(self, *args, **kwargs):
+        #attach timeout if it's given as a default session-level variable
+        # (it's weird that .verify and .headers can be read from the session
+        #  object but .timeout cannot; patch time?)
+        # XXX this should *not* live here. It should live in a mixin and/or monkeypatch to requests.Session
+        # --> it should live in merge_environment_settings, since that's the hook requests.Session.request() uses. 
+        if "timeout" not in kwargs: 
+            if hasattr(self, "timeout"):
+                kwargs["timeout"] = self.timeout
+        
+            
         r = ISIResponse(super().request(*args, **kwargs))
         query = qs_parse(urlparse(r.url).query)
         if "SID" in query:
@@ -280,6 +290,9 @@ class ISI():
         if session is None: session = requests.Session()
         if not isinstance(session, requests.Session): raise TypeError("session")
         session = ISISession(session)
+        if not hasattr(session,'timeout'):
+            session.timeout = 29 #set a default timeout, so that getting kicked off doesn't just hang for hours; 
+
         self.session = session
         
         # hit the front page of WoS to extract relevant things that let us pretend to be a Real Browser(TM) better

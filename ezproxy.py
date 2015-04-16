@@ -101,8 +101,16 @@ class EzProxy(requests.Session):
         """
         Rewrite all requests going through this session to go through the library proxy.
         """
-        
         assert self._logged_in == "logging_in" or self._logged_in, "Must be logged in to use the library proxy" #it will 302 to the login page if you're not; since this would be confusing when scripting, just disallow it.               
+        
+        # TODO: implement backoff on timeouts.
+        #   My first guess is that right here is a good place for it,
+        #   since I'm 99% sure it's EzProxy that's tracking request rates
+        #   so if we accidentally go over their limits, here is where
+        #  specifics: quadratic backoff + retry (like TCP)
+        #        or : rate limit (perhaps add an instance attribute) so that we, hopefully, never
+        #     the latter is probably easier to program with in general, because timeouts would immediately percolate up
+        #  --> requests *already does* retrials, but gives up after 3 attempts  
         
         # rewrite the referer to use the proxy too
         # TODO: where else do we leak URLs?
@@ -139,19 +147,19 @@ class UWProxy(EzProxy):
         Notice: UW flips the order of user/pass: name is the username and barcode is the pass. By default, EzProxy has them the other way.
         """
         super().__init__("proxy.lib.uwaterloo.ca")
-        self.login(barcode, last_name)
         
-    def request(self, *args, **kwargs):
-        """
-        override request() to *disable* SSL verification because the UW
-        proxy has an out of date cert or something.
-        but only if verify= is not passed
-         
+        # all connections through this proxy go through a single server
+        #*disable* SSL verification because the UW
+        #proxy has an out of date cert or something.
+        #but only if verify= is not passed
         # TODO: figure out what's going on here; what if I explicitly add UW's cert to the search path (which python-requests lets me do by setting verify to a path instead of a boolean) ?
-        """
-        if 'verify' not in kwargs:
-            kwargs['verify'] = False
-        return super().request(*args, **kwargs) 
+        # (be mindful: this must happen after super init since super init sets a default value)
+        self.verify = False
+        
+        # automatically login, since why would you create a proxy without logging in?
+        # the only reason EzProxy doesn't is because some sites might require complicated auth dances
+        # which cannot(?) be done in one step and definitely
+        self.login(barcode, last_name)
 
 class GuelphProxy(EzProxy):
     def __init__(self, barcode, last_name):
