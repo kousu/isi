@@ -235,9 +235,11 @@ class ISISession(requests.Session):
     """
     wrap a requests.Session so that, on requests to ISI pages, the in-page embedded error messages get translated to python exceptions.
     note that this does undo the hard work requests goes to to lazily load pages, as it has to read and parse the whole page before returning to application code
-    
     """
-    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs); del args, kwargs # <-- compatibility with wrapper()
+        self.__dict__.setdefault("timeout", 29) #set a default timeout (if not set already), so that getting kicked off doesn't just hang for hours but instead eventually retries
+        
     def __getstate__(self):
         state = super().__getstate__()
         if hasattr(self,'_SID'): state['_SID'] = self._SID
@@ -287,8 +289,6 @@ class ISI():
         if session is None: session = requests.Session()
         if not isinstance(session, requests.Session): raise TypeError("session")
         session = wrapper(ISISession)(session)
-        if not hasattr(session,'timeout'):
-            session.timeout = 29 #set a default timeout, so that getting kicked off doesn't just hang for hours; 
 
         self.session = session
         
